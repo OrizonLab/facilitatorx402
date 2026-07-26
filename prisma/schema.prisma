@@ -1,0 +1,118 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Core payment lifecycle
+// ───────────────────────────────────────────────────────────────────────────────
+
+model PaymentRequest {
+  id        String   @id @default(cuid())
+  seller    String
+  buyer     String
+  network   Int
+  asset     String
+  amount    BigInt
+  invoiceId String
+  scheme    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  verification PaymentVerification?
+  settlement   PaymentSettlement?
+  receipt      PaymentReceipt?
+  auditLogs    AuditLog[]
+
+  @@index([seller, createdAt])
+  @@index([invoiceId])
+  @@map("payment_requests")
+}
+
+model PaymentVerification {
+  id                 String             @id @default(cuid())
+  requestId          String             @unique
+  verificationStatus VerificationStatus
+  errorCode          String?
+  reason             String?
+  signatureHash      String             @unique
+  nonce              String             @unique
+  payloadHash        String
+  createdAt          DateTime           @default(now())
+
+  request PaymentRequest @relation(fields: [requestId], references: [id])
+
+  @@index([signatureHash])
+  @@index([nonce])
+  @@map("payment_verifications")
+}
+
+model PaymentSettlement {
+  id               String           @id @default(cuid())
+  requestId        String           @unique
+  settlementStatus SettlementStatus @default(pending)
+  settlementId     String           @unique
+  txHash           String?          @unique
+  feeAmount        BigInt?
+  referralCode     String?
+  developerShare   BigInt?
+  errorReason      String?
+  confirmedAt      DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  request PaymentRequest @relation(fields: [requestId], references: [id])
+
+  @@index([settlementStatus, createdAt])
+  @@map("payment_settlements")
+}
+
+model PaymentReceipt {
+  id              String   @id @default(cuid())
+  requestId       String   @unique
+  protocolVersion String
+  responsePayload Json
+  createdAt       DateTime @default(now())
+
+  request PaymentRequest @relation(fields: [requestId], references: [id])
+
+  @@index([requestId])
+  @@map("payment_receipts")
+}
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Audit
+// ───────────────────────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  entityType String
+  entityId   String
+  action     String
+  actor      String?
+  payload    Json?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Enums
+// ───────────────────────────────────────────────────────────────────────────────
+
+enum VerificationStatus {
+  accepted
+  rejected
+}
+
+enum SettlementStatus {
+  pending
+  confirmed
+  failed
+}
