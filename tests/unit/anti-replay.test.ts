@@ -1,101 +1,92 @@
-/**
- * Unit tests — Anti-replay protection
- * Mocks Redis and PostgreSQL.
- */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { claimNonce, claimSignatureHash, isNonceSeen, releaseNonce } from '../../src/infrastructure/anti-replay.js'
 
-vi.mock('../../src/infrastructure/redis.js', () => ({
-  getRedis: vi.fn(),
-}))
-
-vi.mock('../../src/infrastructure/db.js', () => ({
-  db: {
-    paymentVerification: {
-      findFirst: vi.fn(),
-    },
+// Mock Redis client
+const mockRedis = {
+  store: new Map<string, string>(),
+  async set(key: string, value: string, _ex: string, _ttl: number, flag: string) {
+    if (flag === 'NX') {
+      if (this.store.has(key)) return null
+      this.store.set(key, value)
+      return 'OK'
+    }
+    this.store.set(key, value)
+    return 'OK'
   },
-}))
+  async get(key: string) {
+    return this.store.get(key) ?? null
+  },
+  async del(key: string) {
+    this.store.delete(key)
+    return 1
+  },
+}
 
-import { getRedis } from '../../src/infrastructure/redis.js'
-import { db } from '../../src/infrastructure/db.js'
-import { checkReplayRedis, checkReplayPostgres, hashSignature } from '../../src/protocol/anti-replay.js'
+beforeEach(() => {
+  mockRedis.store.clear()
+})
 
-describe('hashSignature', () => {
-  it('returns a 64-char hex string', () => {
-    const hash = hashSignature('0x' + 'ab'.repeat(65))
-    expect(hash).toHaveLength(64)
-    expect(hash).toMatch(/^[0-9a-f]+$/)
+describe('claimNonce', () => {
+  const redis = mockRedis as any
+
+  it('claims a fresh nonce', async () => {
+    const result = await claimNonce(redis, '0x' + '1'.repeat(64))
+    expect(result).toBe(true)
   })
 
-  it('is deterministic', () => {
-    const sig = '0x' + 'ff'.repeat(65)
-    expect(hashSignature(sig)).toBe(hashSignature(sig))
+  it('rejects a duplicate nonce', async () => {
+    const nonce = '0x' + '2'.repeat(64)
+    await claimNonce(redis, nonce)
+    const result = await claimNonce(redis, nonce)
+    expect(result).toBe(false)
+  })
+
+  it('is case-insensitive', async () => {
+    const nonce = '0x' + 'aAbB'.repeat(16)
+    await claimNonce(redis, nonce.toUpperCase())
+    const result = await claimNonce(redis, nonce.toLowerCase())
+    expect(result).toBe(false)
   })
 })
 
-describe('checkReplayRedis', () => {
-  const mockRedis = { exists: vi.fn() }
+describe('claimSignatureHash', () => {
+  const redis = mockRedis as any
 
-  beforeEach(() => {
-    vi.mocked(getRedis).mockReturnValue(mockRedis as any)
-    mockRedis.exists.mockReset()
+  it('claims a fresh signature hash', async () => {
+    const hash = '0x' + 'a'.repeat(130)
+    expect(await claimSignatureHash(redis, hash)).toBe(true)
   })
 
-  it('returns not duplicate when both keys are absent', async () => {
-    mockRedis.exists.mockResolvedValue(0)
-    const result = await checkReplayRedis('nonce1', 'sighash1')
-    expect(result.isDuplicate).toBe(false)
-  })
-
-  it('detects duplicate nonce', async () => {
-    mockRedis.exists
-      .mockResolvedValueOnce(1) // nonce exists
-      .mockResolvedValueOnce(0)
-    const result = await checkReplayRedis('nonce1', 'sighash1')
-    expect(result.isDuplicate).toBe(true)
-    expect(result.reason).toBe('nonce_used')
-  })
-
-  it('detects duplicate signature', async () => {
-    mockRedis.exists
-      .mockResolvedValueOnce(0)
-      .mockResolvedValueOnce(1) // sig exists
-    const result = await checkReplayRedis('nonce2', 'sighash2')
-    expect(result.isDuplicate).toBe(true)
-    expect(result.reason).toBe('signature_used')
+  it('rejects duplicate', async () => {
+    const hash = '0x' + 'b'.repeat(130)
+    await claimSignatureHash(redis, hash)
+    expect(await claimSignatureHash(redis, hash)).toBe(false)
   })
 })
 
-describe('checkReplayPostgres', () => {
-  beforeEach(() => {
-    vi.mocked(db.paymentVerification.findFirst).mockReset()
+describe('releaseNonce', () => {
+  const redis = mockRedis as any
+
+  it('allows re-claim after release', async () => {
+    const nonce = '0x' + 'c'.repeat(64)
+    await claimNonce(redis, nonce)
+    await releaseNonce(redis, nonce)
+    const result = await claimNonce(redis, nonce)
+    expect(result).toBe(true)
+  })
+})
+
+describe('isNonceSeen', () => {
+  const redis = mockRedis as any
+
+  it('returns false for unknown nonce', async () => {
+    const nonce = '0x' + 'd'.repeat(64)
+    expect(await isNonceSeen(redis, nonce)).toBe(false)
   })
 
-  it('returns not duplicate when no record found', async () => {
-    vi.mocked(db.paymentVerification.findFirst).mockResolvedValue(null)
-    const result = await checkReplayPostgres('nonce3', 'sighash3')
-    expect(result.isDuplicate).toBe(false)
-  })
-
-  it('detects duplicate nonce from PostgreSQL', async () => {
-    vi.mocked(db.paymentVerification.findFirst).mockResolvedValue({
-      id: 'v1',
-      nonce: 'nonce3',
-      signatureHash: 'other',
-    } as any)
-    const result = await checkReplayPostgres('nonce3', 'sighash3')
-    expect(result.isDuplicate).toBe(true)
-    expect(result.reason).toBe('nonce_used')
-  })
-
-  it('detects duplicate signature from PostgreSQL', async () => {
-    vi.mocked(db.paymentVerification.findFirst).mockResolvedValue({
-      id: 'v1',
-      nonce: 'other',
-      signatureHash: 'sighash3',
-    } as any)
-    const result = await checkReplayPostgres('nonce4', 'sighash3')
-    expect(result.isDuplicate).toBe(true)
-    expect(result.reason).toBe('signature_used')
+  it('returns true after claim', async () => {
+    const nonce = '0x' + 'e'.repeat(64)
+    await claimNonce(redis, nonce)
+    expect(await isNonceSeen(redis, nonce)).toBe(true)
   })
 })
