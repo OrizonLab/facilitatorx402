@@ -1,37 +1,69 @@
-/**
- * POST /settle route.
- *
- * Security:
- *   - Per-seller rate limit: 30 req/min via X-Api-Key header (preHandler hook)
- *   - Global IP rate limit applied by @fastify/rate-limit in app.ts
- *   - Idempotent: second call with same requestId returns 200 with existing result
- */
 import type { FastifyInstance } from 'fastify'
-import { settlePayloadSchema } from '../../protocol/x402-schemas.js'
-import { settlePaymentUseCase } from '../../application/settle-payment.usecase.js'
-import { createSellerRateLimitHook } from '../../infrastructure/rate-limit.js'
-import { createError } from '../errors.js'
-import { logger } from '../../infrastructure/logger.js'
+import { z } from 'zod'
+import { settlePayment } from '../../settlement/settle-payment.js'
+import type { SettleDeps } from '../../settlement/settle-payment.js'
 
-export async function settleRoute(app: FastifyInstance): Promise<void> {
-  // Per-seller rate limit: 30 req/min/seller (keyed by X-Api-Key prefix)
-  app.addHook('preHandler', createSellerRateLimitHook('settle'))
+const SettleBodySchema = z.object({
+  paymentRequestId: z.string().min(1),
+  referralCode: z.string().optional(),
+})
 
-  app.post('/settle', async (request, reply) => {
-    const parseResult = settlePayloadSchema.safeParse(request.body)
-    if (!parseResult.success) {
-      throw createError('validation_error', {
-        message: parseResult.error.errors.map((e) => `${e.path.join('.')}: ${e.message}`).join('; '),
-      })
-    }
+export async function settleRoute(
+  app: FastifyInstance,
+  deps: SettleDeps,
+): Promise<void> {
+  app.post(
+    '/settle',
+    {
+      schema: {
+        description: 'Settle a verified x402 payment on-chain',
+        tags: ['payments'],
+        body: {
+          type: 'object',
+          required: ['paymentRequestId'],
+          properties: {
+            paymentRequestId: { type: 'string' },
+            referralCode:     { type: 'string' },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            properties: {
+              settled:      { type: 'boolean' },
+              settlementId: { type: 'string' },
+              requestId:    { type: 'string' },
+              txHash:       { type: 'string' },
+              status:       { type: 'string' },
+              receiptId:    { type: 'string' },
+              _idempotent:  { type: 'boolean' },
+            },
+          },
+          202: {
+            type: 'object',
+            properties: {
+              settled:   { type: 'boolean' },
+              requestId: { type: 'string' },
+              error: {
+                type: 'object',
+                properties: {
+                  code:    { type: 'string' },
+                  message: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const body = SettleBodySchema.parse(request.body)
+      const result = await settlePayment(body, deps)
 
-    const { requestId, referralCode } = parseResult.data
-    const log = logger.child({ requestId })
-    log.info('Settle endpoint called')
-
-    const result = await settlePaymentUseCase(requestId, referralCode)
-
-    const httpStatus = result._idempotent ? 200 : result.settled ? 201 : 422
-    return reply.status(httpStatus).send(result)
-  })
+      if (!result.settled) {
+        return reply.status(202).send(result)
+      }
+      return reply.status(200).send(result)
+    },
+  )
 }
