@@ -85,6 +85,138 @@ model PaymentReceipt {
 }
 
 // ───────────────────────────────────────────────────────────────────────────────
+// Sellers — servers, robots, IoT devices, AI agents
+// ───────────────────────────────────────────────────────────────────────────────
+
+model Seller {
+  id            String     @id
+  name          String
+  apiKeyHash    String     @unique  @map("api_key_hash")
+  walletAddress String     @map("wallet_address")
+  referralCode  String?    @map("referral_code")
+  deviceType    DeviceType @default(server) @map("device_type")
+  webhookUrl    String?    @map("webhook_url")
+  active        Boolean    @default(true)
+  createdAt     DateTime   @default(now()) @map("created_at")
+  updatedAt     DateTime   @updatedAt      @map("updated_at")
+
+  webhooks      WebhookSubscription[]
+  deviceCodes   DeviceCode[]
+
+  @@index([apiKeyHash])
+  @@index([deviceType])
+  @@map("sellers")
+}
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Webhooks
+// ───────────────────────────────────────────────────────────────────────────────
+
+model WebhookSubscription {
+  id        String         @id
+  sellerId  String         @map("seller_id")
+  url       String
+  events    String[]       // PostgreSQL text[] native array
+  secret    String
+  active    Boolean        @default(true)
+  createdAt DateTime       @default(now()) @map("created_at")
+  updatedAt DateTime       @updatedAt      @map("updated_at")
+
+  seller    Seller              @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  deliveries WebhookDelivery[]
+
+  @@index([sellerId])
+  @@index([active])
+  @@map("webhook_subscriptions")
+}
+
+model WebhookDelivery {
+  id             String          @id
+  subscriptionId String          @map("subscription_id")
+  event          String
+  payload        Json
+  attempt        Int             @default(1)
+  status         DeliveryStatus  @default(pending)
+  httpStatus     Int?            @map("http_status")
+  responseBody   String?         @map("response_body")
+  nextRetryAt    DateTime?       @map("next_retry_at")
+  deliveredAt    DateTime?       @map("delivered_at")
+  createdAt      DateTime        @default(now()) @map("created_at")
+
+  subscription WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId])
+  @@index([status])
+  @@index([nextRetryAt])
+  @@map("webhook_deliveries")
+}
+
+// ───────────────────────────────────────────────────────────────────────────────
+// OAuth2 Device Flow (RFC 8628) — robots & IoT
+// ───────────────────────────────────────────────────────────────────────────────
+
+model DeviceCode {
+  id          String    @id
+  sellerId    String?   @map("seller_id")
+  deviceCode  String    @unique @map("device_code")
+  userCode    String    @unique @map("user_code")
+  deviceName  String?   @map("device_name")
+  deviceType  DeviceType @default(robot) @map("device_type")
+  approved    Boolean   @default(false)
+  expiresAt   DateTime  @map("expires_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  seller Seller? @relation(fields: [sellerId], references: [id], onDelete: SetNull)
+
+  @@index([userCode])
+  @@index([expiresAt])
+  @@map("device_codes")
+}
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Dynamic network & asset registry (Phase 13 — multi-network)
+// ───────────────────────────────────────────────────────────────────────────────
+
+model Network {
+  id              String   @id
+  chainId         Int      @unique @map("chain_id")
+  name            String   @unique
+  rpcUrl          String   @map("rpc_url")
+  fallbackRpcUrl  String?  @map("fallback_rpc_url")
+  nativeCurrency  String   @map("native_currency")
+  blockExplorer   String   @map("block_explorer")
+  active          Boolean  @default(true)
+  addedBy         String?  @map("added_by")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt      @map("updated_at")
+
+  assets NetworkAsset[]
+
+  @@index([active])
+  @@map("networks")
+}
+
+model NetworkAsset {
+  id         String   @id
+  networkId  String   @map("network_id")
+  symbol     String
+  address    String
+  decimals   Int      @default(6)
+  minAmount  String   @map("min_amount")  // stored as string to avoid BigInt precision loss
+  maxAmount  String   @map("max_amount")
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt      @map("updated_at")
+
+  network Network @relation(fields: [networkId], references: [id], onDelete: Cascade)
+
+  @@unique([networkId, address])
+  @@unique([networkId, symbol])
+  @@index([active])
+  @@map("network_assets")
+}
+
+// ───────────────────────────────────────────────────────────────────────────────
 // Audit
 // ───────────────────────────────────────────────────────────────────────────────
 
@@ -115,4 +247,17 @@ enum SettlementStatus {
   pending
   confirmed
   failed
+}
+
+enum DeliveryStatus {
+  pending
+  delivered
+  failed
+}
+
+enum DeviceType {
+  server
+  robot
+  iot
+  agent
 }

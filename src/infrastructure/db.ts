@@ -1,23 +1,28 @@
 import { PrismaClient } from '@prisma/client'
-import { config } from './config.js'
+import { logger } from './logger.js'
 
-const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient }
+// Singleton Prisma client — PostgreSQL only
+export const db = new PrismaClient({
+  log: [
+    { emit: 'event', level: 'error' },
+    { emit: 'event', level: 'warn' },
+  ],
+})
 
-export const prisma: PrismaClient =
-  globalForPrisma.prisma ??
-  new PrismaClient({
-    log: config.NODE_ENV === 'development' ? ['query', 'warn', 'error'] : ['error'],
-  })
+db.$on('error', (e) => logger.error({ msg: e.message, target: e.target }, 'prisma error'))
+db.$on('warn',  (e) => logger.warn({ msg: e.message, target: e.target }, 'prisma warning'))
 
-if (config.NODE_ENV !== 'production') {
-  globalForPrisma.prisma = prisma
+export async function checkDatabaseHealth(): Promise<'ok' | 'error'> {
+  try {
+    // Raw SQL ping — works on PostgreSQL only, intentionally
+    await db.$queryRaw`SELECT 1`
+    return 'ok'
+  } catch (err: unknown) {
+    logger.error({ err }, 'database health check failed')
+    return 'error'
+  }
 }
 
-export async function checkDatabaseHealth(): Promise<boolean> {
-  try {
-    await prisma.$queryRaw`SELECT 1`
-    return true
-  } catch {
-    return false
-  }
+export async function disconnectDb(): Promise<void> {
+  await db.$disconnect()
 }
