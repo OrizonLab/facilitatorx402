@@ -1,10 +1,11 @@
 import type { PrismaClient } from '@prisma/client'
 import type { Redis } from 'ioredis'
 import type { Logger } from 'pino'
-import { sendTransferWithAuthorization } from './on-chain-sender.js'
-import { calculateFees, loadFeeConfig } from './fee-calculator.js'
+import { submitOnChain } from './on-chain.js'
+import { createFeeEngine } from './fee-engine.js'
 import { createError } from '../http/errors.js'
 import type { NetworkRegistry } from '../application/verify-payment.js'
+import { getConfig } from '../infrastructure/config.js'
 
 const SETTLE_LOCK_PREFIX = 'settle_lock:'
 const SETTLE_LOCK_TTL = 120 // seconds — matches confirmation timeout
@@ -47,7 +48,7 @@ export async function settlePayment(
   req: SettleRequest,
   deps: SettleDeps,
 ): Promise<SettleResult | SettlePendingResult> {
-  const { prisma, redis, logger, networkRegistry, relayerPrivateKey } = deps
+  const { prisma, redis, logger, networkRegistry } = deps
   const { paymentRequestId, referralCode } = req
 
   const log = logger.child({ paymentRequestId })
@@ -122,31 +123,40 @@ export async function settlePayment(
   log.info({ settlementId }, 'settle.pending_created')
 
   try {
-    // 6. Resolve network + asset config
+    // 6. Resolve network + asset config from NetworkRegistry
     const network = networkRegistry.getNetwork(paymentRequest.network)
     if (!network) throw new Error(`Unknown network: ${paymentRequest.network}`)
     const asset = network.assets[paymentRequest.asset]
     if (!asset) throw new Error(`Unknown asset: ${paymentRequest.asset}`)
 
     const verification = paymentRequest.verifications[0]!
+    const config = getConfig()
 
-    // 7. Submit on-chain
-    const onChainResult = await sendTransferWithAuthorization({
-      contractAddress: asset.contractAddress as `0x${string}`,
-      from: paymentRequest.buyer as `0x${string}`,
-      to: paymentRequest.seller as `0x${string}`,
-      value: paymentRequest.amount,
-      validAfter: BigInt(0),  // stored in verification payload — simplified for V1
-      validBefore: BigInt(Math.floor(paymentRequest.expiresAt.getTime() / 1000)),
-      nonce: verification.nonce as `0x${string}`,
-      signature: verification.signatureHash as `0x${string}`,  // raw sig stored via signatureHash = lowercased sig
-      rpcUrl: process.env.RPC_URL_BASE ?? 'https://mainnet.base.org',
-      relayerPrivateKey: relayerPrivateKey as `0x${string}`,
+    // 7. Submit on-chain via canonical on-chain.ts (ERC-3009, correct ABI, multi-RPC)
+    const onChainResult = await submitOnChain({
+      from:           paymentRequest.buyer as `0x${string}`,
+      to:             paymentRequest.seller as `0x${string}`,
+      value:          paymentRequest.amount,
+      validAfter:     BigInt(0),
+      validBefore:    BigInt(Math.floor(paymentRequest.expiresAt.getTime() / 1000)),
+      nonce:          verification.nonce as `0x${string}`,
+      signature:      verification.signatureHash as `0x${string}`,
+      assetAddress:   asset.contractAddress as `0x${string}`,
+      chainId:        network.chainId,
+      rpcUrl:         config.RPC_URL,
+      fallbackRpcUrl: config.RPC_URL_FALLBACK ?? null,
     })
 
-    // 8. Calculate fees
-    const feeConfig = loadFeeConfig()
-    const fees = calculateFees(paymentRequest.amount, feeConfig, !!referralCode)
+    // 8. Compute fees via FeeEngine (supports free tier + premium tiers)
+    const feeEngine = createFeeEngine({
+      platformFeeBps:    config.PLATFORM_FEE_BPS,
+      developerShareBps: config.DEVELOPER_SHARE_BPS,
+    })
+    const fees = feeEngine.compute(
+      paymentRequest.amount,
+      paymentRequest.seller,
+      referralCode ?? null,
+    )
 
     // 9. Persist confirmed settlement + receipt atomically
     const receiptId = generateId()
@@ -157,29 +167,29 @@ export async function settlePayment(
         where: { id: settlementId },
         data: {
           settlementStatus: 'confirmed',
-          txHash: onChainResult.txHash,
-          feeAmount: fees.feeAmount,
-          developerShare: fees.developerShare,
+          txHash:           onChainResult.txHash,
+          feeAmount:        fees.platformFee,
+          developerShare:   fees.developerShare,
           confirmedAt,
         },
       })
 
       await tx.paymentReceipt.create({
         data: {
-          id: receiptId,
-          requestId: paymentRequestId,
+          id:              receiptId,
+          requestId:       paymentRequestId,
           settlementId,
           protocolVersion: '1',
           responsePayload: {
-            network: paymentRequest.network,
-            asset: paymentRequest.asset,
-            seller: paymentRequest.seller,
-            buyer: paymentRequest.buyer,
-            amount: paymentRequest.amount.toString(),
-            txHash: onChainResult.txHash,
-            feeAmount: fees.feeAmount.toString(),
-            developerShare: fees.developerShare.toString(),
-            confirmedAt: confirmedAt.toISOString(),
+            network:         paymentRequest.network,
+            asset:           paymentRequest.asset,
+            seller:          paymentRequest.seller,
+            buyer:           paymentRequest.buyer,
+            amount:          paymentRequest.amount.toString(),
+            txHash:          onChainResult.txHash,
+            feeAmount:       fees.platformFee.toString(),
+            developerShare:  fees.developerShare.toString(),
+            confirmedAt:     confirmedAt.toISOString(),
           },
         },
       })
@@ -188,16 +198,15 @@ export async function settlePayment(
     log.info({ settlementId, txHash: onChainResult.txHash, receiptId }, 'settle.confirmed')
 
     return {
-      settled: true,
+      settled:      true,
       settlementId,
-      requestId: paymentRequestId,
-      txHash: onChainResult.txHash,
-      status: 'confirmed',
+      requestId:    paymentRequestId,
+      txHash:       onChainResult.txHash,
+      status:       'confirmed',
       receiptId,
     }
   } catch (err) {
     // 10. Persist failure + release lock
-    const errMsg = err instanceof Error ? err.message : 'unknown'
     log.error({ err, settlementId }, 'settle.failed')
 
     await prisma.paymentSettlement.update({
@@ -212,7 +221,7 @@ export async function settlePayment(
       correlationId: paymentRequestId,
     })
   } finally {
-    // Always release lock on success path (failure path releases above)
+    // Always release lock on success path (failure releases in catch above)
     await redis.del(lockKey).catch(() => {})
   }
 }
