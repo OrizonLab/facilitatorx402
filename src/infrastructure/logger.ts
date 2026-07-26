@@ -1,0 +1,19 @@
+import pino from 'pino'
+import { config } from './config.js'
+
+export const logger = pino({
+  level: config.LOG_LEVEL,
+  transport:
+    config.NODE_ENV === 'development'
+      ? { target: 'pino-pretty', options: { colorize: true } }
+      : undefined,
+  base: {
+    service: 'facilitatorx402',
+    version: config.SERVICE_VERSION,
+    env: config.NODE_ENV,
+  },
+  redact: {
+    paths: ['FACILITATOR_PRIVATE_KEY', '*.privateKey', '*.private_key'],
+    remove: true,
+  },
+})
