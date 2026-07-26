@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>facilitatorx402 — Operator Dashboard</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #22263a;
+      --border: #2d3148;
+      --text: #e2e8f0;
+      --muted: #8892a4;
+      --accent: #4f98a3;
+      --success: #6daa45;
+      --error: #dd6974;
+      --warning: #fdab43;
+      --pending: #5591c7;
+      --font: 'Inter', system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    /* Layout */
+    .header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .logo { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 16px; }
+    .logo svg { color: var(--accent); }
+    .badge { background: var(--accent); color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); display: inline-block; margin-right: 6px; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .main { max-width: 1280px; margin: 0 auto; padding: 24px; }
+    /* Tabs */
+    .tabs { display: flex; gap: 4px; margin-bottom: 24px; border-bottom: 1px solid var(--border); }
+    .tab {
+      padding: 8px 16px; border-radius: 6px 6px 0 0; cursor: pointer;
+      color: var(--muted); font-weight: 500; border: none; background: none;
+      transition: all 0.15s; font-family: var(--font); font-size: 14px;
+    }
+    .tab.active { color: var(--text); background: var(--surface2); border-bottom: 2px solid var(--accent); }
+    .tab:hover:not(.active) { color: var(--text); }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    /* KPI Cards */
+    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .kpi {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px;
+    }
+    .kpi-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
+    .kpi-value { font-size: 28px; font-weight: 700; line-height: 1; }
+    .kpi-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    .kpi-value.success { color: var(--success); }
+    .kpi-value.error { color: var(--error); }
+    .kpi-value.accent { color: var(--accent); }
+    /* Table */
+    .table-wrapper {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .table-header {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .table-title { font-weight: 600; font-size: 14px; }
+    .filters { display: flex; gap: 8px; }
+    .filter-select {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    table { width: 100%; border-collapse: collapse; }
+    thead th {
+      padding: 10px 16px;
+      text-align: left;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+    }
+    tbody tr { border-bottom: 1px solid var(--border); transition: background 0.1s; }
+    tbody tr:hover { background: var(--surface2); }
+    tbody tr:last-child { border-bottom: none; }
+    td { padding: 10px 16px; font-size: 13px; }
+    .mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; }
+    /* Status badges */
+    .status {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;
+    }
+    .status.confirmed { background: rgba(109,170,69,0.15); color: var(--success); }
+    .status.failed { background: rgba(221,105,116,0.15); color: var(--error); }
+    .status.pending { background: rgba(85,145,199,0.15); color: var(--pending); }
+    .status.processing { background: rgba(253,171,67,0.15); color: var(--warning); }
+    .status.delivered { background: rgba(109,170,69,0.15); color: var(--success); }
+    /* Pagination */
+    .pagination { display: flex; gap: 8px; align-items: center; justify-content: flex-end; padding: 12px 16px; border-top: 1px solid var(--border); }
+    .page-btn {
+      background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+      padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;
+    }
+    .page-btn:hover { border-color: var(--accent); }
+    .page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .page-info { font-size: 12px; color: var(--muted); }
+    /* Live feed */
+    .live-feed { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+    .live-feed-header { padding: 12px 16px; border-bottom: 1px solid var(--border); font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .feed-list { max-height: 400px; overflow-y: auto; }
+    .feed-item {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      animation: slideIn 0.3s ease;
+    }
+    @keyframes slideIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+    .feed-item:last-child { border-bottom: none; }
+    .feed-left { display: flex; flex-direction: column; gap: 2px; }
+    .feed-network { font-size: 11px; color: var(--muted); }
+    /* Auth screen */
+    .auth-screen {
+      min-height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .auth-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 32px;
+      width: 360px;
+    }
+    .auth-title { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
+    .auth-sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+    .input-group { margin-bottom: 16px; }
+    .input-group label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 500; }
+    .input-group input {
+      width: 100%; background: var(--bg);
+      border: 1px solid var(--border); color: var(--text);
+      padding: 10px 12px; border-radius: 8px; font-size: 14px;
+      outline: none; transition: border-color 0.15s;
+    }
+    .input-group input:focus { border-color: var(--accent); }
+    .btn-primary {
+      width: 100%; background: var(--accent); color: #fff;
+      border: none; padding: 10px; border-radius: 8px;
+      font-size: 14px; font-weight: 600; cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    .btn-primary:hover { opacity: 0.85; }
+    .error-msg { color: var(--error); font-size: 12px; margin-top: 8px; }
+    #app { display: none; }
+  </style>
+</head>
+<body>
+
+<!-- Auth screen -->
+<div id="authScreen" class="auth-screen">
+  <div class="auth-card">
+    <div class="auth-title">Operator Dashboard</div>
+    <div class="auth-sub">facilitatorx402 — Sign in with your dashboard token</div>
+    <div class="input-group">
+      <label>Dashboard Token</label>
+      <input type="password" id="tokenInput" placeholder="Enter your DASHBOARD_TOKEN" />
+    </div>
+    <button class="btn-primary" onclick="login()">Access Dashboard</button>
+    <div id="authError" class="error-msg"></div>
+  </div>
+</div>
+
+<!-- Main app -->
+<div id="app">
+  <header class="header">
+    <div class="logo">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+        <path d="M2 17l10 5 10-5"/>
+        <path d="M2 12l10 5 10-5"/>
+      </svg>
+      facilitatorx402
+      <span class="badge">V2</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:16px;">
+      <span><span class="status-dot"></span>Live</span>
+      <span id="headerTime" style="color:var(--muted);font-size:12px;"></span>
+    </div>
+  </header>
+
+  <div class="main">
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('overview')">Overview</button>
+      <button class="tab" onclick="switchTab('settlements')">Settlements</button>
+      <button class="tab" onclick="switchTab('webhooks')">Webhooks</button>
+      <button class="tab" onclick="switchTab('live')">Live Feed</button>
+    </div>
+
+    <!-- Overview -->
+    <div id="panel-overview" class="panel active">
+      <div class="kpi-grid" id="kpiGrid">
+        <div class="kpi"><div class="kpi-label">Total Settlements</div><div class="kpi-value accent" id="kpi-total">—</div></div>
+        <div class="kpi"><div class="kpi-label">Confirmed</div><div class="kpi-value success" id="kpi-confirmed">—</div></div>
+        <div class="kpi"><div class="kpi-label">Failed</div><div class="kpi-value error" id="kpi-failed">—</div></div>
+        <div class="kpi"><div class="kpi-label">Success Rate</div><div class="kpi-value" id="kpi-rate">—</div></div>
+        <div class="kpi"><div class="kpi-label">Fees Generated</div><div class="kpi-value accent" id="kpi-fees">—</div><div class="kpi-sub">USDC base units</div></div>
+      </div>
+    </div>
+
+    <!-- Settlements -->
+    <div id="panel-settlements" class="panel">
+      <div class="table-wrapper">
+        <div class="table-header">
+          <span class="table-title">Settlements</span>
+          <div class="filters">
+            <select class="filter-select" onchange="filterSettlements()" id="filterStatus">
+              <option value="">All Status</option>
+              <option value="confirmed">Confirmed</option>
+              <option value="failed">Failed</option>
+              <option value="pending">Pending</option>
+            </select>
+          </div>
+        </div>
+        <table>
+          <thead><tr>
+            <th>ID</th><th>Status</th><th>Network</th><th>Asset</th>
+            <th>Amount</th><th>Fee</th><th>Tx Hash</th><th>Date</th>
+          </tr></thead>
+          <tbody id="settlementsBody"><tr><td colspan="8" style="text-align:center;color:var(--muted);padding:32px">Loading...</td></tr></tbody>
+        </table>
+        <div class="pagination">
+          <button class="page-btn" id="prevBtn" onclick="changePage(-1)" disabled>← Prev</button>
+          <span class="page-info" id="pageInfo"></span>
+          <button class="page-btn" id="nextBtn" onclick="changePage(1)">Next →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Webhooks -->
+    <div id="panel-webhooks" class="panel">
+      <div class="table-wrapper">
+        <div class="table-header">
+          <span class="table-title">Webhook Deliveries</span>
+          <div class="filters">
+            <select class="filter-select" onchange="filterWebhooks()" id="filterWebhookStatus">
+              <option value="">All Status</option>
+              <option value="delivered">Delivered</option>
+              <option value="failed">Failed</option>
+              <option value="pending">Pending</option>
+            </select>
+          </div>
+        </div>
+        <table>
+          <thead><tr><th>Event</th><th>Seller</th><th>URL</th><th>Attempt</th><th>Status</th><th>HTTP</th><th>Date</th></tr></thead>
+          <tbody id="webhooksBody"><tr><td colspan="7" style="text-align:center;color:var(--muted);padding:32px">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Live Feed -->
+    <div id="panel-live" class="panel">
+      <div class="live-feed">
+        <div class="live-feed-header">
+          <span class="status-dot"></span>
+          Real-time Settlement Feed (SSE)
+          <span id="sseStatus" style="margin-left:auto;font-size:12px;color:var(--muted)">Connecting...</span>
+        </div>
+        <div class="feed-list" id="feedList">
+          <div style="padding:32px;text-align:center;color:var(--muted)">Waiting for events...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let token = ''
+let currentPage = 1
+let settlementPages = 1
+
+async function login() {
+  token = document.getElementById('tokenInput').value.trim()
+  const res = await fetch('/dashboard/api/stats', { headers: { Authorization: 'Bearer ' + token } })
+  if (!res.ok) {
+    document.getElementById('authError').textContent = 'Invalid token. Please try again.'
+    return
+  }
+  document.getElementById('authScreen').style.display = 'none'
+  document.getElementById('app').style.display = 'block'
+  initDashboard()
+}
+
+function initDashboard() {
+  loadStats()
+  loadSettlements()
+  loadWebhooks()
+  connectSSE()
+  setInterval(() => loadStats(), 30_000)
+  setInterval(() => {
+    document.getElementById('headerTime').textContent = new Date().toLocaleTimeString()
+  }, 1000)
+}
+
+async function api(path) {
+  const res = await fetch(path, { headers: { Authorization: 'Bearer ' + token } })
+  return res.json()
+}
+
+async function loadStats() {
+  const data = await api('/dashboard/api/stats')
+  document.getElementById('kpi-total').textContent = data.settlements.total
+  document.getElementById('kpi-confirmed').textContent = data.settlements.confirmed
+  document.getElementById('kpi-failed').textContent = data.settlements.failed
+  document.getElementById('kpi-rate').textContent = data.settlements.successRate
+  document.getElementById('kpi-fees').textContent = data.fees.totalGenerated
+}
+
+async function loadSettlements(page = 1) {
+  const status = document.getElementById('filterStatus')?.value ?? ''
+  const data = await api(`/dashboard/api/settlements?page=${page}&limit=20&status=${status}`)
+  const body = document.getElementById('settlementsBody')
+  settlementPages = data.pagination.pages
+  currentPage = data.pagination.page
+  document.getElementById('pageInfo').textContent = `Page ${currentPage} / ${settlementPages} (${data.pagination.total} total)`
+  document.getElementById('prevBtn').disabled = currentPage <= 1
+  document.getElementById('nextBtn').disabled = currentPage >= settlementPages
+  body.innerHTML = data.data.map(s => `
+    <tr>
+      <td class="mono">${s.id.slice(0,12)}...</td>
+      <td><span class="status ${s.settlementStatus}">${s.settlementStatus}</span></td>
+      <td>${s.request?.network?.name ?? '—'}</td>
+      <td>${s.request?.asset ?? '—'}</td>
+      <td class="mono">${s.request?.amount ?? '—'}</td>
+      <td class="mono">${s.feeAmount ?? '—'}</td>
+      <td class="mono">${s.txHash ? s.txHash.slice(0,10)+'...' : '—'}</td>
+      <td>${new Date(s.createdAt).toLocaleString()}</td>
+    </tr>`).join('') || '<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:32px">No settlements found</td></tr>'
+}
+
+async function loadWebhooks() {
+  const status = document.getElementById('filterWebhookStatus')?.value ?? ''
+  const data = await api(`/dashboard/api/webhooks?limit=50&status=${status}`)
+  const body = document.getElementById('webhooksBody')
+  body.innerHTML = data.data.map(w => `
+    <tr>
+      <td><span class="status ${w.status === 'delivered' ? 'confirmed' : w.status}">${w.event}</span></td>
+      <td class="mono">${w.subscription?.sellerId?.slice(0,8) ?? '—'}...</td>
+      <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis">${w.subscription?.url ?? '—'}</td>
+      <td>${w.attempt}</td>
+      <td><span class="status ${w.status === 'delivered' ? 'confirmed' : w.status}">${w.status}</span></td>
+      <td>${w.httpStatus ?? '—'}</td>
+      <td>${new Date(w.createdAt).toLocaleString()}</td>
+    </tr>`).join('') || '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:32px">No webhook deliveries</td></tr>'
+}
+
+function connectSSE() {
+  const es = new EventSource('/dashboard/events?token=' + token)
+  es.addEventListener('connected', () => {
+    document.getElementById('sseStatus').textContent = '● Connected'
+    document.getElementById('sseStatus').style.color = 'var(--success)'
+  })
+  es.addEventListener('settlement', (e) => {
+    const s = JSON.parse(e.data)
+    const list = document.getElementById('feedList')
+    const item = document.createElement('div')
+    item.className = 'feed-item'
+    item.innerHTML = `
+      <div class="feed-left">
+        <span><span class="status ${s.settlementStatus}">${s.settlementStatus}</span> ${s.request?.asset ?? ''} ${s.request?.amount ?? ''}</span>
+        <span class="feed-network">${s.request?.network?.name ?? ''} · ${new Date(s.createdAt).toLocaleTimeString()}</span>
+      </div>
+      <span class="mono" style="font-size:11px;color:var(--muted)">${s.txHash ? s.txHash.slice(0,14)+'...' : 'pending'}</span>`
+    if (list.querySelector('[style*="Waiting"]')) list.innerHTML = ''
+    list.prepend(item)
+    if (list.children.length > 50) list.removeChild(list.lastChild)
+  })
+  es.onerror = () => {
+    document.getElementById('sseStatus').textContent = '● Reconnecting...'
+    document.getElementById('sseStatus').style.color = 'var(--warning)'
+  }
+}
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach((t,i) => {
+    const tabs = ['overview','settlements','webhooks','live']
+    t.classList.toggle('active', tabs[i] === name)
+  })
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'))
+  document.getElementById('panel-' + name)?.classList.add('active')
+}
+
+function changePage(dir) {
+  const next = currentPage + dir
+  if (next < 1 || next > settlementPages) return
+  loadSettlements(next)
+}
+
+function filterSettlements() { loadSettlements(1) }
+function filterWebhooks() { loadWebhooks() }
+
+document.getElementById('tokenInput')?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') login()
+})
+</script>
+</body>
+</html>

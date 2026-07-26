@@ -1,7 +1,6 @@
-// facilitatorx402 — Prisma Schema
+// facilitatorx402 — Prisma Schema V2
 // PostgreSQL ONLY — no SQLite fallback.
-// datasource db.provider is hardcoded to "postgresql".
-// Run: npx prisma migrate dev --name init
+// Run: npx prisma migrate dev --name v2-add-webhook-secret-and-indexes
 
 generator client {
   provider = "prisma-client-js"
@@ -13,18 +12,20 @@ datasource db {
 }
 
 // ─── Seller ──────────────────────────────────────────────────────────────────
+// Represents an operator that integrates with this facilitator.
+// apiKeyHash stores SHA-256(rawApiKey) — never the key in clear.
 
 model Seller {
-  id             String   @id @default(cuid())
+  id             String     @id @default(cuid())
   name           String
-  apiKeyHash     String   @unique
-  walletAddress  String   @unique
-  referralCode   String?  @db.VarChar(50)
+  apiKeyHash     String     @unique
+  walletAddress  String     @unique
+  referralCode   String?    @db.VarChar(50)
   deviceType     DeviceType @default(server)
-  webhookUrl     String?
-  active         Boolean  @default(true)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  webhookUrl     String?    // Deprecated in V2 — use WebhookSubscription instead
+  active         Boolean    @default(true)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
 
   paymentRequests       PaymentRequest[]
   webhookSubscriptions  WebhookSubscription[]
@@ -40,6 +41,8 @@ enum DeviceType {
 }
 
 // ─── Network & Asset (dynamic, admin-managed) ─────────────────────────────────
+// V2: supports multiple networks simultaneously (Base, Optimism, Arbitrum)
+// V2: supports multiple assets per network (USDC, EURC)
 
 model Network {
   id              String   @id @default(cuid())
@@ -101,6 +104,7 @@ model PaymentRequest {
 
   @@index([invoiceId])
   @@index([buyerAddress])
+  @@index([sellerId])
   @@index([createdAt])
   @@map("payment_requests")
 }
@@ -152,6 +156,7 @@ model PaymentSettlement {
   @@index([requestId])
   @@index([txHash])
   @@index([settlementStatus])
+  @@index([createdAt])
   @@map("payment_settlements")
 }
 
@@ -167,7 +172,7 @@ enum SettlementStatus {
 model PaymentReceipt {
   id              String   @id @default(cuid())
   requestId       String   @unique
-  protocolVersion String   @default("x402-v1")
+  protocolVersion String   @default("x402-v2")
   responsePayload Json
   createdAt       DateTime @default(now())
 
@@ -177,41 +182,47 @@ model PaymentReceipt {
 }
 
 // ─── Webhook Subscription ─────────────────────────────────────────────────────
+// V2: webhookSecret stored encrypted (AES-256-GCM via secrets manager)
+// V2: events is a PostgreSQL text[] — ['payment.verified', 'payment.settled', 'payment.failed']
 
 model WebhookSubscription {
-  id        String   @id @default(cuid())
-  sellerId  String
-  url       String
-  events    String[]   // PostgreSQL text[] — not available in SQLite
-  secret    String
-  active    Boolean  @default(true)
-  createdAt DateTime @default(now())
+  id             String   @id @default(cuid())
+  sellerId       String
+  url            String
+  events         String[] // PostgreSQL text[]
+  secret         String   // Store encrypted in production (see docs/secrets-management.md)
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  seller    Seller   @relation(fields: [sellerId], references: [id])
-  deliveries WebhookDelivery[]
+  seller         Seller   @relation(fields: [sellerId], references: [id])
+  deliveries     WebhookDelivery[]
 
   @@index([sellerId])
   @@map("webhook_subscriptions")
 }
 
-// ─── Webhook Delivery (full audit trail in PostgreSQL) ────────────────────────
+// ─── Webhook Delivery (full audit trail) ─────────────────────────────────────
+// V2: httpStatus and responseBody added for debugging dead-lettered deliveries
 
 model WebhookDelivery {
-  id             String   @id @default(cuid())
+  id             String    @id @default(cuid())
   subscriptionId String
-  event          String   @db.VarChar(64)
+  event          String    @db.VarChar(64)
   payload        Json
-  attempt        Int      @default(1)
-  status         String   @default("pending") // pending | delivered | failed
+  attempt        Int       @default(1)
+  status         String    @default("pending") // pending | delivered | failed
   httpStatus     Int?
   responseBody   String?
   deliveredAt    DateTime?
-  createdAt      DateTime @default(now())
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   subscription WebhookSubscription @relation(fields: [subscriptionId], references: [id])
 
   @@index([subscriptionId])
   @@index([event])
   @@index([status])
+  @@index([createdAt])
   @@map("webhook_deliveries")
 }
