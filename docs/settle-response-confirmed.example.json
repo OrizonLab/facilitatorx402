@@ -1,0 +1,11 @@
+{
+  "requestId": "01J9XXXXXXXXXXXXXXXXXXX",
+  "status": "confirmed",
+  "settlementId": "01J9ZZZZZZZZZZZZZ",
+  "txHash": "0xTX_HASH_ON_BASE_MAINNET",
+  "feeAmount": "5000",
+  "developerShare": "10",
+  "receiptId": "01J9RRRRRRRRRRRRRR",
+  "confirmedAt": "2026-07-26T10:42:05.000Z",
+  "settledAt": "2026-07-26T10:42:05.000Z"
+}

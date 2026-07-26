@@ -1,0 +1,10 @@
+{
+  "requestId": "01J9XXXXXXXXXXXXXXXXXXX",
+  "status": "failed",
+  "error": {
+    "code": "settlement_failed",
+    "message": "On-chain submission failed: transaction reverted"
+  },
+  "httpStatus": 502,
+  "failedAt": "2026-07-26T10:42:06.000Z"
+}
