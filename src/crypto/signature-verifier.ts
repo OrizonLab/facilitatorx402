@@ -1,91 +1,71 @@
-/**
- * EIP-3009 / EIP-712 signature verifier using viem.
- *
- * Verifies transferWithAuthorization signatures:
- *   - ERC-3009 (USDC on Base uses this)
- *   - The signer must match authorization.from
- *
- * Domain: the ERC-20 token contract (chainId + verifyingContract)
- * Types: TransferWithAuthorization (EIP-3009)
- *
- * domain.version is read from asset.eip712Version (set in NetworkRegistry per-asset).
- * This avoids hardcoding '2' and allows other tokens/chains to use different versions.
- */
-import { recoverTypedDataAddress } from 'viem'
-import type { X402Authorization } from '../protocol/x402-parser.js'
-import type { AssetConfig, NetworkConfig } from '../infrastructure/network-registry.js'
+import { recoverTypedDataAddress, type Address, type Hex } from 'viem'
+import type { Authorization } from '../protocol/x402-parser.js'
 
-// EIP-3009 domain & types
-const EIP3009_TYPES = {
-  TransferWithAuthorization: [
-    { name: 'from', type: 'address' },
-    { name: 'to', type: 'address' },
-    { name: 'value', type: 'uint256' },
-    { name: 'validAfter', type: 'uint256' },
-    { name: 'validBefore', type: 'uint256' },
-    { name: 'nonce', type: 'bytes32' },
-  ],
-} as const
-
-export interface SignatureVerificationResult {
-  valid: boolean
-  recoveredAddress?: string
-  error?: string
+export interface VerifySignatureParams {
+  authorization: Authorization
+  signature: Hex
+  contractAddress: Address  // USDC contract address on the chain
+  chainId: number
+  eip712Version: string     // '2' for USDC on Base
 }
 
 /**
- * Verify an EIP-3009 TransferWithAuthorization signature.
- *
- * @param authorization - The authorization object from the x402 payload
- * @param signature     - The 65-byte EIP-712 signature (0x-prefixed)
- * @param asset         - The asset config (address = token contract, eip712Version for domain)
- * @param network       - The network config (chainId)
+ * EIP-712 domain for ERC-3009 TransferWithAuthorization
+ * https://eips.ethereum.org/EIPS/eip-712
  */
-export async function verifyTransferAuthorization(
-  authorization: X402Authorization,
-  signature: `0x${string}`,
-  asset: AssetConfig,
-  network: NetworkConfig
-): Promise<SignatureVerificationResult> {
-  try {
-    // domain.version comes from the asset config — no hardcoded '2'
-    const domainVersion = asset.eip712Version ?? '2'
+const ERC3009_TYPES = {
+  TransferWithAuthorization: [
+    { name: 'from',        type: 'address' },
+    { name: 'to',          type: 'address' },
+    { name: 'value',       type: 'uint256' },
+    { name: 'validAfter',  type: 'uint256' },
+    { name: 'validBefore', type: 'uint256' },
+    { name: 'nonce',       type: 'bytes32' },
+  ],
+} as const
 
-    const domain = {
-      name: asset.symbol,
-      version: domainVersion,
-      chainId: network.chainId,
-      verifyingContract: asset.address as `0x${string}`,
-    }
+/**
+ * Verify an ERC-3009 TransferWithAuthorization signature.
+ * Returns the recovered signer address, or throws on invalid signature.
+ */
+export async function verifyErc3009Signature({
+  authorization,
+  signature,
+  contractAddress,
+  chainId,
+  eip712Version,
+}: VerifySignatureParams): Promise<Address> {
+  const domain = {
+    name: 'USD Coin',
+    version: eip712Version,
+    chainId,
+    verifyingContract: contractAddress,
+  } as const
 
-    const message = {
-      from: authorization.from as `0x${string}`,
-      to: authorization.to as `0x${string}`,
-      value: BigInt(authorization.value),
-      validAfter: BigInt(authorization.validAfter),
-      validBefore: BigInt(authorization.validBefore),
-      nonce: authorization.nonce as `0x${string}`,
-    }
+  const message = {
+    from:        authorization.from as Address,
+    to:          authorization.to as Address,
+    value:       BigInt(authorization.value),
+    validAfter:  BigInt(authorization.validAfter),
+    validBefore: BigInt(authorization.validBefore),
+    nonce:       authorization.nonce as Hex,
+  } as const
 
-    const recovered = await recoverTypedDataAddress({
-      domain,
-      types: EIP3009_TYPES,
-      primaryType: 'TransferWithAuthorization',
-      message,
-      signature,
-    })
+  const recovered = await recoverTypedDataAddress({
+    domain,
+    types: ERC3009_TYPES,
+    primaryType: 'TransferWithAuthorization',
+    message,
+    signature,
+  })
 
-    const valid = recovered.toLowerCase() === authorization.from.toLowerCase()
+  return recovered
+}
 
-    return {
-      valid,
-      recoveredAddress: recovered,
-      error: valid ? undefined : `Signature mismatch: expected ${authorization.from}, got ${recovered}`,
-    }
-  } catch (err: any) {
-    return {
-      valid: false,
-      error: `Signature verification failed: ${err?.message ?? 'unknown error'}`,
-    }
-  }
+/**
+ * Compute a stable hash of the signature bytes for DB deduplication.
+ * We use the raw signature as the dedup key (hex string, lowercased).
+ */
+export function computeSignatureHash(signature: string): string {
+  return signature.toLowerCase()
 }
