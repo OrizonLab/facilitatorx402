@@ -1,58 +1,70 @@
+# facilitatorx402 — Docker Compose (PostgreSQL + Redis)
+# SQLite is not used.
+
 version: '3.9'
 
 services:
-  app:
-    build: .
-    ports:
-      - '${PORT:-3000}:3000'
-    environment:
-      NODE_ENV: production
-      DATABASE_URL: postgresql://facilitator:password@postgres:5432/facilitatorx402
-      REDIS_URL: redis://redis:6379
-    env_file:
-      - .env
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-    healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://localhost:3000/health']
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
+  # ─── PostgreSQL ─────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: facilitator
-      POSTGRES_PASSWORD: password
+      POSTGRES_PASSWORD: facilitator
       POSTGRES_DB: facilitatorx402
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
     ports:
       - '5432:5432'
-    restart: unless-stopped
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U facilitator -d facilitatorx402']
       interval: 5s
       timeout: 5s
       retries: 10
 
+  # ─── Redis ───────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
-    command: redis-server --appendonly yes
-    volumes:
-      - redis_data:/data
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
     ports:
       - '6379:6379'
-    restart: unless-stopped
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
-      timeout: 3s
+      timeout: 5s
       retries: 10
+
+  # ─── App ─────────────────────────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://facilitator:facilitator@postgres:5432/facilitatorx402
+      REDIS_URL: redis://redis:6379
+      RPC_URL: ${RPC_URL}
+      FACILITATOR_PRIVATE_KEY: ${FACILITATOR_PRIVATE_KEY}
+      ADMIN_API_KEY: ${ADMIN_API_KEY}
+      PLATFORM_FEE_BPS: ${PLATFORM_FEE_BPS:-50}
+      DEVELOPER_SHARE_BPS: ${DEVELOPER_SHARE_BPS:-20}
+    ports:
+      - '${PORT:-3000}:3000'
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--spider', 'http://localhost:3000/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
 volumes:
   postgres_data:

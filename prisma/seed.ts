@@ -1,27 +1,26 @@
 /**
- * Prisma seed — PostgreSQL only.
- * Seeds the initial network and asset configuration for local development.
- *
- * Run: npm run db:seed
+ * Prisma seed — PostgreSQL ONLY.
+ * Seeds base-mainnet + USDC for development.
+ * Run: npx prisma db seed
  */
 import { PrismaClient } from '@prisma/client'
 import { ulid } from 'ulid'
 
 const prisma = new PrismaClient()
 
-async function main() {
-  console.log('Seeding database (PostgreSQL)...')
+async function main(): Promise<void> {
+  console.log('Seeding facilitatorx402 (PostgreSQL)...')
 
-  // Base mainnet
-  const baseNetwork = await prisma.network.upsert({
-    where: { name: 'base-mainnet' },
+  // Base Mainnet
+  const baseMainnet = await prisma.network.upsert({
+    where: { chainId: 8453 },
     update: {},
     create: {
       id: ulid(),
       chainId: 8453,
       name: 'base-mainnet',
-      rpcUrl: process.env.RPC_URL ?? 'https://mainnet.base.org',
-      fallbackRpcUrl: 'https://base.llamarpc.com',
+      rpcUrl: 'https://mainnet.base.org',
+      fallbackRpcUrl: 'https://base.drpc.org',
       nativeCurrency: 'ETH',
       blockExplorer: 'https://basescan.org',
       active: true,
@@ -29,60 +28,63 @@ async function main() {
     },
   })
 
+  console.log('  ✓ Network: base-mainnet (chainId 8453)')
+
+  // USDC on Base
+  await prisma.networkAsset.upsert({
+    where: { networkId_symbol: { networkId: baseMainnet.id, symbol: 'USDC' } },
+    update: {},
+    create: {
+      id: ulid(),
+      networkId: baseMainnet.id,
+      symbol: 'USDC',
+      address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+      decimals: 6,
+      minAmount: '1',       // 0.000001 USDC
+      maxAmount: '1000000000000', // 1,000,000 USDC
+      active: true,
+    },
+  })
+
+  console.log('  ✓ Asset: USDC on base-mainnet')
+
   // Base Sepolia (testnet)
-  const baseTestnet = await prisma.network.upsert({
-    where: { name: 'base-sepolia' },
+  const baseSepolia = await prisma.network.upsert({
+    where: { chainId: 84532 },
     update: {},
     create: {
       id: ulid(),
       chainId: 84532,
       name: 'base-sepolia',
-      rpcUrl: process.env.RPC_URL_TESTNET ?? 'https://sepolia.base.org',
-      fallbackRpcUrl: 'https://base-sepolia.llamarpc.com',
+      rpcUrl: 'https://sepolia.base.org',
       nativeCurrency: 'ETH',
       blockExplorer: 'https://sepolia.basescan.org',
-      active: true,
+      active: false, // disabled by default — enable via admin API
       addedBy: 'seed',
     },
   })
 
-  // USDC on Base mainnet
-  await prisma.networkAsset.upsert({
-    where: { networkId_symbol: { networkId: baseNetwork.id, symbol: 'USDC' } },
-    update: {},
-    create: {
-      id: ulid(),
-      networkId: baseNetwork.id,
-      symbol: 'USDC',
-      address: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
-      decimals: 6,
-      minAmount: '1',         // 0.000001 USDC — micro-payment for AI/robots
-      maxAmount: '1000000000', // 1000 USDC
-      active: true,
-    },
-  })
+  console.log('  ✓ Network: base-sepolia (disabled — enable via admin API)')
 
-  // USDC on Base Sepolia
   await prisma.networkAsset.upsert({
-    where: { networkId_symbol: { networkId: baseTestnet.id, symbol: 'USDC' } },
+    where: { networkId_symbol: { networkId: baseSepolia.id, symbol: 'USDC' } },
     update: {},
     create: {
       id: ulid(),
-      networkId: baseTestnet.id,
+      networkId: baseSepolia.id,
       symbol: 'USDC',
       address: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
       decimals: 6,
       minAmount: '1',
-      maxAmount: '1000000000',
-      active: true,
+      maxAmount: '1000000000000',
+      active: false,
     },
   })
 
+  console.log('  ✓ Asset: USDC on base-sepolia (disabled)')
   console.log('Seed complete.')
-  console.log(`  Networks: base-mainnet (chainId 8453), base-sepolia (chainId 84532)`)
-  console.log(`  Assets: USDC on both networks`)
 }
 
 main()
-  .catch((e) => { console.error(e); process.exit(1) })
+  .catch(console.error)
   .finally(() => prisma.$disconnect())

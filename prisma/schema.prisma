@@ -1,3 +1,8 @@
+// facilitatorx402 — Prisma Schema
+// PostgreSQL ONLY — no SQLite fallback.
+// datasource db.provider is hardcoded to "postgresql".
+// Run: npx prisma migrate dev --name init
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -7,252 +12,24 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ───────────────────────────────────────────────────────────────────────────────
-// Core payment lifecycle
-// ───────────────────────────────────────────────────────────────────────────────
-
-model PaymentRequest {
-  id        String   @id @default(cuid())
-  seller    String
-  buyer     String
-  network   Int
-  asset     String
-  amount    BigInt
-  invoiceId String
-  scheme    String
-  expiresAt DateTime
-  createdAt DateTime @default(now())
-
-  verification PaymentVerification?
-  settlement   PaymentSettlement?
-  receipt      PaymentReceipt?
-  auditLogs    AuditLog[]
-
-  @@index([seller, createdAt])
-  @@index([invoiceId])
-  @@map("payment_requests")
-}
-
-model PaymentVerification {
-  id                 String             @id @default(cuid())
-  requestId          String             @unique
-  verificationStatus VerificationStatus
-  errorCode          String?
-  reason             String?
-  signatureHash      String             @unique
-  nonce              String             @unique
-  payloadHash        String
-  createdAt          DateTime           @default(now())
-
-  request PaymentRequest @relation(fields: [requestId], references: [id])
-
-  @@index([signatureHash])
-  @@index([nonce])
-  @@map("payment_verifications")
-}
-
-model PaymentSettlement {
-  id               String           @id @default(cuid())
-  requestId        String           @unique
-  settlementStatus SettlementStatus @default(pending)
-  settlementId     String           @unique
-  txHash           String?          @unique
-  feeAmount        BigInt?
-  referralCode     String?
-  developerShare   BigInt?
-  errorReason      String?
-  confirmedAt      DateTime?
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
-
-  request PaymentRequest @relation(fields: [requestId], references: [id])
-
-  @@index([settlementStatus, createdAt])
-  @@map("payment_settlements")
-}
-
-model PaymentReceipt {
-  id              String   @id @default(cuid())
-  requestId       String   @unique
-  protocolVersion String
-  responsePayload Json
-  createdAt       DateTime @default(now())
-
-  request PaymentRequest @relation(fields: [requestId], references: [id])
-
-  @@index([requestId])
-  @@map("payment_receipts")
-}
-
-// ───────────────────────────────────────────────────────────────────────────────
-// Sellers — servers, robots, IoT devices, AI agents
-// ───────────────────────────────────────────────────────────────────────────────
+// ─── Seller ──────────────────────────────────────────────────────────────────
 
 model Seller {
-  id            String     @id
-  name          String
-  apiKeyHash    String     @unique  @map("api_key_hash")
-  walletAddress String     @map("wallet_address")
-  referralCode  String?    @map("referral_code")
-  deviceType    DeviceType @default(server) @map("device_type")
-  webhookUrl    String?    @map("webhook_url")
-  active        Boolean    @default(true)
-  createdAt     DateTime   @default(now()) @map("created_at")
-  updatedAt     DateTime   @updatedAt      @map("updated_at")
+  id             String   @id @default(cuid())
+  name           String
+  apiKeyHash     String   @unique
+  walletAddress  String   @unique
+  referralCode   String?  @db.VarChar(50)
+  deviceType     DeviceType @default(server)
+  webhookUrl     String?
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  webhooks      WebhookSubscription[]
-  deviceCodes   DeviceCode[]
+  paymentRequests       PaymentRequest[]
+  webhookSubscriptions  WebhookSubscription[]
 
-  @@index([apiKeyHash])
-  @@index([deviceType])
   @@map("sellers")
-}
-
-// ───────────────────────────────────────────────────────────────────────────────
-// Webhooks
-// ───────────────────────────────────────────────────────────────────────────────
-
-model WebhookSubscription {
-  id        String         @id
-  sellerId  String         @map("seller_id")
-  url       String
-  events    String[]       // PostgreSQL text[] native array
-  secret    String
-  active    Boolean        @default(true)
-  createdAt DateTime       @default(now()) @map("created_at")
-  updatedAt DateTime       @updatedAt      @map("updated_at")
-
-  seller    Seller              @relation(fields: [sellerId], references: [id], onDelete: Cascade)
-  deliveries WebhookDelivery[]
-
-  @@index([sellerId])
-  @@index([active])
-  @@map("webhook_subscriptions")
-}
-
-model WebhookDelivery {
-  id             String          @id
-  subscriptionId String          @map("subscription_id")
-  event          String
-  payload        Json
-  attempt        Int             @default(1)
-  status         DeliveryStatus  @default(pending)
-  httpStatus     Int?            @map("http_status")
-  responseBody   String?         @map("response_body")
-  nextRetryAt    DateTime?       @map("next_retry_at")
-  deliveredAt    DateTime?       @map("delivered_at")
-  createdAt      DateTime        @default(now()) @map("created_at")
-
-  subscription WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
-
-  @@index([subscriptionId])
-  @@index([status])
-  @@index([nextRetryAt])
-  @@map("webhook_deliveries")
-}
-
-// ───────────────────────────────────────────────────────────────────────────────
-// OAuth2 Device Flow (RFC 8628) — robots & IoT
-// ───────────────────────────────────────────────────────────────────────────────
-
-model DeviceCode {
-  id          String    @id
-  sellerId    String?   @map("seller_id")
-  deviceCode  String    @unique @map("device_code")
-  userCode    String    @unique @map("user_code")
-  deviceName  String?   @map("device_name")
-  deviceType  DeviceType @default(robot) @map("device_type")
-  approved    Boolean   @default(false)
-  expiresAt   DateTime  @map("expires_at")
-  createdAt   DateTime  @default(now()) @map("created_at")
-
-  seller Seller? @relation(fields: [sellerId], references: [id], onDelete: SetNull)
-
-  @@index([userCode])
-  @@index([expiresAt])
-  @@map("device_codes")
-}
-
-// ───────────────────────────────────────────────────────────────────────────────
-// Dynamic network & asset registry (Phase 13 — multi-network)
-// ───────────────────────────────────────────────────────────────────────────────
-
-model Network {
-  id              String   @id
-  chainId         Int      @unique @map("chain_id")
-  name            String   @unique
-  rpcUrl          String   @map("rpc_url")
-  fallbackRpcUrl  String?  @map("fallback_rpc_url")
-  nativeCurrency  String   @map("native_currency")
-  blockExplorer   String   @map("block_explorer")
-  active          Boolean  @default(true)
-  addedBy         String?  @map("added_by")
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt      @map("updated_at")
-
-  assets NetworkAsset[]
-
-  @@index([active])
-  @@map("networks")
-}
-
-model NetworkAsset {
-  id         String   @id
-  networkId  String   @map("network_id")
-  symbol     String
-  address    String
-  decimals   Int      @default(6)
-  minAmount  String   @map("min_amount")  // stored as string to avoid BigInt precision loss
-  maxAmount  String   @map("max_amount")
-  active     Boolean  @default(true)
-  createdAt  DateTime @default(now()) @map("created_at")
-  updatedAt  DateTime @updatedAt      @map("updated_at")
-
-  network Network @relation(fields: [networkId], references: [id], onDelete: Cascade)
-
-  @@unique([networkId, address])
-  @@unique([networkId, symbol])
-  @@index([active])
-  @@map("network_assets")
-}
-
-// ───────────────────────────────────────────────────────────────────────────────
-// Audit
-// ───────────────────────────────────────────────────────────────────────────────
-
-model AuditLog {
-  id         String   @id @default(cuid())
-  entityType String
-  entityId   String
-  action     String
-  actor      String?
-  payload    Json?
-  createdAt  DateTime @default(now())
-
-  @@index([entityType, entityId])
-  @@index([createdAt])
-  @@map("audit_logs")
-}
-
-// ───────────────────────────────────────────────────────────────────────────────
-// Enums
-// ───────────────────────────────────────────────────────────────────────────────
-
-enum VerificationStatus {
-  accepted
-  rejected
-}
-
-enum SettlementStatus {
-  pending
-  confirmed
-  failed
-}
-
-enum DeliveryStatus {
-  pending
-  delivered
-  failed
 }
 
 enum DeviceType {
@@ -260,4 +37,181 @@ enum DeviceType {
   robot
   iot
   agent
+}
+
+// ─── Network & Asset (dynamic, admin-managed) ─────────────────────────────────
+
+model Network {
+  id              String   @id @default(cuid())
+  chainId         Int      @unique
+  name            String   @unique @db.VarChar(64)
+  rpcUrl          String
+  fallbackRpcUrl  String?
+  nativeCurrency  String   @default("ETH")
+  blockExplorer   String
+  active          Boolean  @default(true)
+  addedBy         String   @default("system")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  assets          NetworkAsset[]
+  paymentRequests PaymentRequest[]
+
+  @@map("networks")
+}
+
+model NetworkAsset {
+  id         String   @id @default(cuid())
+  networkId  String
+  symbol     String   @db.VarChar(20)
+  address    String   @db.VarChar(42)
+  decimals   Int      @default(6)
+  minAmount  String   @default("1")
+  maxAmount  String   @default("1000000000")
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+
+  network    Network  @relation(fields: [networkId], references: [id], onDelete: Cascade)
+
+  @@unique([networkId, symbol])
+  @@unique([networkId, address])
+  @@map("network_assets")
+}
+
+// ─── Payment Request ──────────────────────────────────────────────────────────
+
+model PaymentRequest {
+  id            String   @id @default(cuid())
+  sellerId      String?
+  buyerAddress  String
+  networkId     String
+  asset         String   @db.VarChar(20)
+  amount        String
+  invoiceId     String   @db.VarChar(255)
+  scheme        String   @default("exact")
+  expiresAt     DateTime
+  createdAt     DateTime @default(now())
+
+  seller        Seller?  @relation(fields: [sellerId], references: [id])
+  network       Network  @relation(fields: [networkId], references: [id])
+
+  verifications PaymentVerification[]
+  settlements   PaymentSettlement[]
+  receipt       PaymentReceipt?
+
+  @@index([invoiceId])
+  @@index([buyerAddress])
+  @@index([createdAt])
+  @@map("payment_requests")
+}
+
+// ─── Payment Verification ─────────────────────────────────────────────────────
+
+model PaymentVerification {
+  id                 String             @id @default(cuid())
+  requestId          String
+  verificationStatus VerificationStatus @default(pending)
+  errorCode          String?            @db.VarChar(64)
+  reason             String?
+  signatureHash      String?            @unique @db.VarChar(128)
+  nonce              String?            @unique @db.VarChar(128)
+  payloadHash        String?            @db.VarChar(128)
+  createdAt          DateTime           @default(now())
+
+  request PaymentRequest @relation(fields: [requestId], references: [id])
+
+  @@index([requestId])
+  @@index([signatureHash])
+  @@index([nonce])
+  @@map("payment_verifications")
+}
+
+enum VerificationStatus {
+  pending
+  accepted
+  rejected
+}
+
+// ─── Payment Settlement ───────────────────────────────────────────────────────
+
+model PaymentSettlement {
+  id               String           @id @default(cuid())
+  requestId        String
+  settlementStatus SettlementStatus @default(pending)
+  settlementId     String?          @unique @db.VarChar(128)
+  txHash           String?          @unique @db.VarChar(128)
+  feeAmount        String?
+  referralCode     String?          @db.VarChar(50)
+  developerShare   String?
+  confirmedAt      DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  request PaymentRequest @relation(fields: [requestId], references: [id])
+
+  @@index([requestId])
+  @@index([txHash])
+  @@index([settlementStatus])
+  @@map("payment_settlements")
+}
+
+enum SettlementStatus {
+  pending
+  processing
+  confirmed
+  failed
+}
+
+// ─── Payment Receipt ──────────────────────────────────────────────────────────
+
+model PaymentReceipt {
+  id              String   @id @default(cuid())
+  requestId       String   @unique
+  protocolVersion String   @default("x402-v1")
+  responsePayload Json
+  createdAt       DateTime @default(now())
+
+  request PaymentRequest @relation(fields: [requestId], references: [id])
+
+  @@map("payment_receipts")
+}
+
+// ─── Webhook Subscription ─────────────────────────────────────────────────────
+
+model WebhookSubscription {
+  id        String   @id @default(cuid())
+  sellerId  String
+  url       String
+  events    String[]   // PostgreSQL text[] — not available in SQLite
+  secret    String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  seller    Seller   @relation(fields: [sellerId], references: [id])
+  deliveries WebhookDelivery[]
+
+  @@index([sellerId])
+  @@map("webhook_subscriptions")
+}
+
+// ─── Webhook Delivery (full audit trail in PostgreSQL) ────────────────────────
+
+model WebhookDelivery {
+  id             String   @id @default(cuid())
+  subscriptionId String
+  event          String   @db.VarChar(64)
+  payload        Json
+  attempt        Int      @default(1)
+  status         String   @default("pending") // pending | delivered | failed
+  httpStatus     Int?
+  responseBody   String?
+  deliveredAt    DateTime?
+  createdAt      DateTime @default(now())
+
+  subscription WebhookSubscription @relation(fields: [subscriptionId], references: [id])
+
+  @@index([subscriptionId])
+  @@index([event])
+  @@index([status])
+  @@map("webhook_deliveries")
 }
