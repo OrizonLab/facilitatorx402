@@ -1,0 +1,10 @@
+{
+  "requestId": "01J9XXXXXXXXXXXXXXXXXXX",
+  "status": "rejected",
+  "error": {
+    "code": "duplicate_payment",
+    "message": "Payment already used (nonce_used)"
+  },
+  "httpStatus": 409,
+  "rejectedAt": "2026-07-26T10:42:01.456Z"
+}

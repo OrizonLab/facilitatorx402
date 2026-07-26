@@ -1,0 +1,14 @@
+{
+  "requestId": "01J9XXXXXXXXXXXXXXXXXXX",
+  "status": "accepted",
+  "verificationId": "01J9YYYYYYYYYYYYY",
+  "paymentRequestId": "01J9XXXXXXXXXXXXXXXXXXX",
+  "network": "base-mainnet",
+  "asset": "USDC",
+  "amount": "1000000",
+  "from": "0xBuyerWalletAddress",
+  "to": "0xYourFacilitatorRecipientAddress",
+  "invoiceId": "inv_01J9XXXXXXXXXXXXXXXXXXX",
+  "expiresAt": "2026-07-26T12:30:00.000Z",
+  "verifiedAt": "2026-07-26T10:42:01.123Z"
+}

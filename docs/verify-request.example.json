@@ -1,0 +1,20 @@
+{
+  "version": "1",
+  "scheme": "exact",
+  "network": "base-mainnet",
+  "asset": "USDC",
+  "invoiceId": "inv_01J9XXXXXXXXXXXXXXXXXXX",
+  "requiredAmount": "1000000",
+  "recipient": "0xYourFacilitatorRecipientAddress",
+  "payload": {
+    "signature": "0xSIGNATURE_65_BYTES_EIP712",
+    "authorization": {
+      "from": "0xBuyerWalletAddress",
+      "to": "0xYourFacilitatorRecipientAddress",
+      "value": "1000000",
+      "validAfter": 0,
+      "validBefore": 1753523400,
+      "nonce": "0xRANDOM_BYTES32_NONCE"
+    }
+  }
+}
