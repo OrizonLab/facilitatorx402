@@ -7,10 +7,14 @@
  *   3. Check expiration (validBefore)
  *   4. Check recipient matches configured seller address
  *   5. Check amount >= requiredAmount
- *   6. Anti-replay check (Redis fast path, then PostgreSQL fallback)
- *   7. Verify EIP-3009 signature (viem)
- *   8. Persist result to PostgreSQL (payment_requests + payment_verifications)
- *   9. Mark nonce/sig as used in Redis
+ *   6. ATOMIC anti-replay claim (Redis SET NX) — claimNonceRedis()
+ *      → replaces the old two-step check+mark pattern
+ *      → race-condition-safe: only ONE concurrent request can claim a nonce
+ *   7. PostgreSQL fallback replay check (durable source of truth)
+ *   8. Verify EIP-3009 signature (viem)
+ *      → on failure: releaseNonceRedis() so legitimate retries are not blocked
+ *   9. Persist result to PostgreSQL
+ *      → on failure: releaseNonceRedis()
  *  10. Return structured accepted/rejected response
  *
  * This function is deterministic and traceable.
@@ -22,9 +26,9 @@ import { networkRegistry } from '../infrastructure/network-registry.js'
 import { verifyTransferAuthorization } from '../crypto/signature-verifier.js'
 import {
   hashSignature,
-  checkReplayRedis,
+  claimNonceRedis,
+  releaseNonceRedis,
   checkReplayPostgres,
-  markReplayUsed,
 } from '../protocol/anti-replay.js'
 import { db } from '../infrastructure/db.js'
 import { logger } from '../infrastructure/logger.js'
@@ -83,24 +87,31 @@ export async function runVerify(
     )
   }
 
-  // --- 6. Anti-replay (Redis fast path) ---
+  // --- 6. ATOMIC anti-replay claim (Redis SET NX) ---
+  // claimNonceRedis() atomically claims nonce + signatureHash in Redis before
+  // any further processing. This closes the race window where two concurrent
+  // requests with the same nonce could both pass a check-then-act pattern.
   const signatureHash = hashSignature(body.payload.signature)
   const nonce = auth.nonce
 
-  const redisReplay = await checkReplayRedis(nonce, signatureHash)
-  if (redisReplay.isDuplicate) {
-    log.warn({ reason: redisReplay.reason, nonce }, 'duplicate payment blocked (Redis)')
-    return reject(requestId, 'duplicate_payment', `Payment already used (${redisReplay.reason})`, 409)
+  const claim = await claimNonceRedis(nonce, signatureHash)
+  if (claim.isDuplicate) {
+    log.warn({ reason: claim.reason, nonce }, 'duplicate payment blocked (Redis claim)')
+    return reject(requestId, 'duplicate_payment', `Payment already used (${claim.reason})`, 409)
   }
 
-  // --- 6b. Anti-replay (PostgreSQL fallback) ---
+  // --- 7. PostgreSQL durable fallback ---
+  // Runs after Redis claim to catch cases where Redis was flushed/restarted.
   const pgReplay = await checkReplayPostgres(nonce, signatureHash)
   if (pgReplay.isDuplicate) {
-    log.warn({ reason: pgReplay.reason, nonce }, 'duplicate payment blocked (PostgreSQL)')
+    // Release the Redis claim — the PG record is the authority, no need to block
+    await releaseNonceRedis(nonce, signatureHash)
+    log.warn({ reason: pgReplay.reason, nonce }, 'duplicate payment blocked (PostgreSQL fallback)')
     return reject(requestId, 'duplicate_payment', `Payment already used (${pgReplay.reason})`, 409)
   }
 
-  // --- 7. Signature verification ---
+  // --- 8. Signature verification ---
+  // On failure: release Redis claim so the sender can correct and retry.
   const sigResult = await verifyTransferAuthorization(
     auth,
     body.payload.signature as `0x${string}`,
@@ -109,12 +120,10 @@ export async function runVerify(
   )
 
   if (!sigResult.valid) {
-    log.warn({ error: sigResult.error }, 'invalid signature')
-    // Persist rejected verification
+    log.warn({ error: sigResult.error }, 'invalid signature — releasing nonce claim')
+    await releaseNonceRedis(nonce, signatureHash)
     await persistVerification({
-      requestId,
-      body,
-      network,
+      requestId, body, network,
       status: 'rejected',
       errorCode: 'invalid_signature',
       reason: sigResult.error,
@@ -124,18 +133,24 @@ export async function runVerify(
     return reject(requestId, 'invalid_signature', sigResult.error ?? 'Signature verification failed', 402)
   }
 
-  // --- 8. Persist accepted verification ---
-  const { paymentRequestId, verificationId } = await persistVerification({
-    requestId,
-    body,
-    network,
-    status: 'accepted',
-    signatureHash,
-    nonce,
-  })
-
-  // --- 9. Mark nonce/sig used in Redis ---
-  await markReplayUsed(nonce, signatureHash)
+  // --- 9. Persist accepted verification ---
+  let paymentRequestId: string
+  let verificationId: string
+  try {
+    const result = await persistVerification({
+      requestId, body, network,
+      status: 'accepted',
+      signatureHash,
+      nonce,
+    })
+    paymentRequestId = result.paymentRequestId
+    verificationId = result.verificationId
+  } catch (persistErr) {
+    // Persistence failed — release Redis claim so the request can be retried
+    log.error({ persistErr }, 'persistence failed — releasing nonce claim for retry')
+    await releaseNonceRedis(nonce, signatureHash)
+    return reject(requestId, 'internal_error', 'Failed to persist verification. Please retry.', 500)
+  }
 
   log.info({ verificationId, paymentRequestId }, 'verify accepted')
 
@@ -185,18 +200,12 @@ async function persistVerification(opts: {
 }): Promise<{ paymentRequestId: string; verificationId: string }> {
   const auth = opts.body.payload.authorization
 
-  // Find network record in PostgreSQL
   const networkRecord = await db.network.findUnique({
     where: { chainId: opts.network.chainId },
   })
 
-  // Upsert payment_request (idempotent on invoiceId + network)
   const paymentRequest = await db.paymentRequest.upsert({
-    where: {
-      // Composite unique created via invoiceId index
-      // We use a raw approach since Prisma requires @unique on the field
-      id: opts.requestId,
-    },
+    where: { id: opts.requestId },
     create: {
       id: opts.requestId,
       buyerAddress: auth.from,
@@ -220,7 +229,7 @@ async function persistVerification(opts: {
       reason: opts.reason,
       signatureHash: opts.signatureHash,
       nonce: opts.nonce,
-      payloadHash: opts.signatureHash, // same as sig hash in V1
+      payloadHash: opts.signatureHash,
     },
   })
 
