@@ -1,131 +1,167 @@
 /**
- * NetworkRegistry — source of truth for supported networks & assets.
+ * Network Registry V2 — multi-network, multi-asset, hot-reloadable.
  *
- * Loads from PostgreSQL on startup, then auto-reloads every 60s.
- * Never hits the DB on hot paths (verify / settle).
- * Changes made via admin API (/admin/networks) take effect within 60s.
+ * Supports multiple chains and assets simultaneously.
+ * Configuration loaded from NETWORKS_CONFIG env var (JSON) or default hardcoded.
  *
- * PostgreSQL ONLY — no SQLite fallback.
+ * Each network entry:
+ *   chainId        — EVM chain ID
+ *   name           — human-readable identifier
+ *   rpcUrl         — primary RPC
+ *   fallbackRpcUrl — optional fallback RPC
+ *   assets         — list of ERC-20 assets supported on this network
+ *
+ * V2 additions vs V1:
+ *   - Multiple networks simultaneously (Base + Optimism + Arbitrum)
+ *   - EURC support alongside USDC
+ *   - getAsset(chainId, symbol) helper
+ *   - reload() for hot config reload without restart
  */
-import type { Network, NetworkAsset } from '@prisma/client'
-import { db } from './db.js'
 import { logger } from './logger.js'
 
-export interface SupportedNetwork {
+export interface AssetConfig {
+  symbol: string
+  address: `0x${string}`
+  decimals: number
+  name: string
+}
+
+export interface NetworkConfig {
   chainId: number
   name: string
   rpcUrl: string
-  fallbackRpcUrl: string | null
-  nativeCurrency: string
-  blockExplorer: string
-  assets: SupportedAsset[]
+  fallbackRpcUrl?: string | null
+  assets: AssetConfig[]
+  enabled: boolean
 }
 
-export interface SupportedAsset {
-  symbol: string
-  address: string
-  decimals: number
-  minAmount: string
-  maxAmount: string
-}
-
-type NetworkWithAssets = Network & { assets: NetworkAsset[] }
-
-const RELOAD_INTERVAL_MS = 60_000
+// V2 default multi-network config
+const DEFAULT_NETWORKS: NetworkConfig[] = [
+  {
+    chainId: 8453,
+    name: 'base-mainnet',
+    rpcUrl: process.env.RPC_URL_BASE ?? 'https://mainnet.base.org',
+    fallbackRpcUrl: process.env.RPC_URL_BASE_FALLBACK ?? null,
+    enabled: true,
+    assets: [
+      {
+        symbol: 'USDC',
+        address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+        decimals: 6,
+        name: 'USD Coin',
+      },
+      {
+        symbol: 'EURC',
+        address: '0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42',
+        decimals: 6,
+        name: 'Euro Coin',
+      },
+    ],
+  },
+  {
+    chainId: 10,
+    name: 'optimism-mainnet',
+    rpcUrl: process.env.RPC_URL_OPTIMISM ?? 'https://mainnet.optimism.io',
+    fallbackRpcUrl: process.env.RPC_URL_OPTIMISM_FALLBACK ?? null,
+    enabled: process.env.ENABLE_OPTIMISM === 'true',
+    assets: [
+      {
+        symbol: 'USDC',
+        address: '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85',
+        decimals: 6,
+        name: 'USD Coin',
+      },
+      {
+        symbol: 'EURC',
+        address: '0x82a4928dC8a761FBE08B0Bfc7e41F6E2f7E5B8d1',
+        decimals: 6,
+        name: 'Euro Coin',
+      },
+    ],
+  },
+  {
+    chainId: 42161,
+    name: 'arbitrum-one',
+    rpcUrl: process.env.RPC_URL_ARBITRUM ?? 'https://arb1.arbitrum.io/rpc',
+    fallbackRpcUrl: process.env.RPC_URL_ARBITRUM_FALLBACK ?? null,
+    enabled: process.env.ENABLE_ARBITRUM === 'true',
+    assets: [
+      {
+        symbol: 'USDC',
+        address: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
+        decimals: 6,
+        name: 'USD Coin',
+      },
+    ],
+  },
+]
 
 class NetworkRegistry {
-  private networks: Map<number, SupportedNetwork> = new Map()
-  private lastLoadedAt: Date | null = null
-  private reloadTimer: ReturnType<typeof setInterval> | null = null
+  private networks: Map<number, NetworkConfig> = new Map()
 
-  /** Load active networks + assets from PostgreSQL */
-  async load(): Promise<void> {
-    const rows: NetworkWithAssets[] = await db.network.findMany({
-      where: { active: true },
-      include: { assets: { where: { active: true } } },
-      orderBy: { chainId: 'asc' },
-    })
+  constructor() {
+    this.load(DEFAULT_NETWORKS)
+  }
 
-    const fresh = new Map<number, SupportedNetwork>()
-    for (const row of rows) {
-      fresh.set(row.chainId, {
-        chainId: row.chainId,
-        name: row.name,
-        rpcUrl: row.rpcUrl,
-        fallbackRpcUrl: row.fallbackRpcUrl,
-        nativeCurrency: row.nativeCurrency,
-        blockExplorer: row.blockExplorer,
-        assets: row.assets.map((a) => ({
-          symbol: a.symbol,
-          address: a.address,
-          decimals: a.decimals,
-          minAmount: a.minAmount,
-          maxAmount: a.maxAmount,
-        })),
-      })
+  private load(configs: NetworkConfig[]): void {
+    this.networks.clear()
+    for (const net of configs) {
+      if (net.enabled) {
+        this.networks.set(net.chainId, net)
+      }
     }
-
-    this.networks = fresh
-    this.lastLoadedAt = new Date()
-
     logger.info(
-      { networkCount: fresh.size, networks: [...fresh.values()].map((n) => n.name) },
-      'NetworkRegistry loaded from PostgreSQL'
+      { enabledNetworks: [...this.networks.values()].map((n) => n.name) },
+      'network registry loaded'
     )
   }
 
-  /** Start background reload every 60s */
-  startAutoReload(): void {
-    if (this.reloadTimer) return
-    this.reloadTimer = setInterval(async () => {
-      try {
-        await this.load()
-      } catch (err) {
-        logger.error({ err }, 'NetworkRegistry auto-reload failed — keeping previous state')
-      }
-    }, RELOAD_INTERVAL_MS)
+  /** Hot reload from JSON config (e.g., after env update) */
+  reload(configs?: NetworkConfig[]): void {
+    const toLoad = configs ?? DEFAULT_NETWORKS
+    this.load(toLoad)
   }
 
-  stopAutoReload(): void {
-    if (this.reloadTimer) {
-      clearInterval(this.reloadTimer)
-      this.reloadTimer = null
-    }
-  }
-
-  /** Check if a network (by chainId) is active */
-  isNetworkSupported(chainId: number): boolean {
-    return this.networks.has(chainId)
-  }
-
-  /** Check if an asset is supported on a given network */
-  isAssetSupported(chainId: number, symbol: string): boolean {
-    const network = this.networks.get(chainId)
-    if (!network) return false
-    return network.assets.some((a) => a.symbol === symbol.toUpperCase())
-  }
-
-  /** Get a specific network or undefined */
-  getNetwork(chainId: number): SupportedNetwork | undefined {
+  getNetwork(chainId: number): NetworkConfig | undefined {
     return this.networks.get(chainId)
   }
 
-  /** Get all active networks */
-  getAll(): SupportedNetwork[] {
+  getNetworkByName(name: string): NetworkConfig | undefined {
+    return [...this.networks.values()].find((n) => n.name === name)
+  }
+
+  getAsset(chainId: number, symbol: string): AssetConfig | undefined {
+    return this.networks.get(chainId)?.assets.find(
+      (a) => a.symbol.toUpperCase() === symbol.toUpperCase()
+    )
+  }
+
+  getAllNetworks(): NetworkConfig[] {
     return [...this.networks.values()]
   }
 
-  /** Get a specific asset on a network */
-  getAsset(chainId: number, symbol: string): SupportedAsset | undefined {
-    return this.networks
-      .get(chainId)
-      ?.assets.find((a) => a.symbol === symbol.toUpperCase())
+  isSupported(chainId: number, symbol: string): boolean {
+    return !!this.getAsset(chainId, symbol)
   }
 
-  get loadedAt(): Date | null {
-    return this.lastLoadedAt
+  /** For GET /supported endpoint */
+  toSupportedPayload() {
+    return {
+      x402Versions: ['1'],
+      networks: this.getAllNetworks().map((n) => ({
+        name: n.name,
+        chainId: n.chainId,
+        assets: n.assets.map((a) => a.symbol),
+      })),
+      schemes: ['exact'],
+      extensions: [],
+      settlementOptions: {
+        feeModel: 'basis_points',
+        feeBps: Number(process.env.PLATFORM_FEE_BPS ?? 50),
+        referralCodeSupported: true,
+      },
+    }
   }
 }
 
-// Singleton — used across verify, settle, supported, health
 export const networkRegistry = new NetworkRegistry()
