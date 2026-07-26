@@ -3,10 +3,6 @@
  *
  * Endpoints disponibles :
  *
- *   GET /dashboard
- *       Interface HTML read-only du monitoring (rendu server-side)
- *       Auth : header Authorization: Bearer <DASHBOARD_TOKEN>
- *
  *   GET /dashboard/api/stats
  *       Statistiques agrégées JSON (volume, commission, taux d'échec)
  *
@@ -21,41 +17,65 @@
  *       Server-Sent Events (SSE) pour les settlements en temps réel
  *
  * Sécurité :
- *   - DASHBOARD_TOKEN env var obligatoire
- *   - Aucune donnée sensible exposée (pas de clés, pas de secrets)
+ *   - DASHBOARD_TOKEN requis (obligatoire via config Zod)
+ *   - Comparaison par timingSafeEqual (anti timing attack)
+ *   - Query params validés via Zod (anti injection d'enum Prisma)
+ *   - SSE : max MAX_SSE_CONNECTIONS connexions simultanées
  *   - Read-only — aucun endpoint de mutation
- *
- * Usage SSE (EventSource côté client) :
- *   const es = new EventSource('/dashboard/events', {
- *     headers: { Authorization: 'Bearer ' + token }
- *   })
- *   es.addEventListener('settlement', (e) => console.log(JSON.parse(e.data)))
  */
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
+import { z } from 'zod'
 import { prisma } from '../../infrastructure/prisma.js'
 import { logger } from '../../infrastructure/logger.js'
+import { getConfig } from '../../infrastructure/config.js'
+import { safeEqual } from '../../infrastructure/safe-compare.js'
 
-const DASHBOARD_TOKEN = process.env.DASHBOARD_TOKEN ?? ''
+// ── SSE connection cap ─────────────────────────────────────────────
+// Prevents file descriptor exhaustion from unbounded SSE connections.
+const MAX_SSE_CONNECTIONS = 50
+let activeSseConnections = 0
 
-// ── Auth middleware ──────────────────────────────────────────────────────────
+// ── Query param schemas ───────────────────────────────────────────
+const SettlementQuerySchema = z.object({
+  status: z.enum(['pending', 'confirmed', 'failed']).optional(),
+  network: z.string().max(64).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+})
+
+const WebhookQuerySchema = z.object({
+  status: z.enum(['pending', 'delivered', 'failed']).optional(),
+  event: z.enum(['settlement.confirmed', 'settlement.failed', 'verify.accepted', 'verify.rejected']).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+})
+
+// ── Auth middleware ───────────────────────────────────────────────
 
 function assertDashboardAuth(request: FastifyRequest, reply: FastifyReply): boolean {
-  if (!DASHBOARD_TOKEN) {
-    reply.status(503).send({ error: 'Dashboard not configured (DASHBOARD_TOKEN missing)' })
-    return false
-  }
-  const auth = request.headers['authorization'] ?? ''
-  const token = auth.replace('Bearer ', '').trim()
-  if (token !== DASHBOARD_TOKEN) {
-    reply.status(401).send({ error: 'Unauthorized' })
+  const config = getConfig()
+  const auth = (request.headers['authorization'] ?? '') as string
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
+
+  if (!safeEqual(token, config.DASHBOARD_TOKEN)) {
+    reply
+      .status(401)
+      .header('WWW-Authenticate', 'Bearer realm="facilitatorx402 dashboard"')
+      .send({
+        error: {
+          code: 'unauthorized',
+          reason: 'Missing or invalid dashboard token',
+          message: 'Provide Authorization: Bearer <DASHBOARD_TOKEN>',
+        },
+      })
     return false
   }
   return true
 }
 
-// ── Plugin ───────────────────────────────────────────────────────────────────
-
-export async function dashboardRoutes(app: FastifyInstance) {
+// ── Plugin ─────────────────────────────────────────────────────────────
+// Exported as `registerDashboardRoutes` to match the import in app.ts
+export async function registerDashboardRoutes(app: FastifyInstance) {
 
   // GET /dashboard/api/stats — Aggregated stats
   app.get('/dashboard/api/stats', async (request, reply) => {
@@ -101,16 +121,18 @@ export async function dashboardRoutes(app: FastifyInstance) {
   app.get('/dashboard/api/settlements', async (request, reply) => {
     if (!assertDashboardAuth(request, reply)) return
 
-    const query = request.query as any
-    const page = Math.max(1, parseInt(query.page ?? '1'))
-    const limit = Math.min(100, Math.max(1, parseInt(query.limit ?? '20')))
+    const parsed = SettlementQuerySchema.safeParse(request.query)
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: { code: 'invalid_query', reason: 'Invalid query parameters', message: parsed.error.errors[0]?.message },
+      })
+    }
+    const { status, network, page, limit } = parsed.data
     const skip = (page - 1) * limit
 
-    const where: any = {}
-    if (query.status) where.settlementStatus = query.status
-    if (query.network) {
-      where.request = { network: { name: query.network } }
-    }
+    const where: Record<string, unknown> = {}
+    if (status) where.settlementStatus = status
+    if (network) where.request = { network: { name: network } }
 
     const [data, total] = await Promise.all([
       prisma.paymentSettlement.findMany({
@@ -135,12 +157,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
 
     return reply.send({
       data,
-      pagination: {
-        page,
-        limit,
-        total,
-        pages: Math.ceil(total / limit),
-      },
+      pagination: { page, limit, total, pages: Math.ceil(total / limit) },
     })
   })
 
@@ -148,14 +165,18 @@ export async function dashboardRoutes(app: FastifyInstance) {
   app.get('/dashboard/api/webhooks', async (request, reply) => {
     if (!assertDashboardAuth(request, reply)) return
 
-    const query = request.query as any
-    const page = Math.max(1, parseInt(query.page ?? '1'))
-    const limit = Math.min(100, Math.max(1, parseInt(query.limit ?? '20')))
+    const parsed = WebhookQuerySchema.safeParse(request.query)
+    if (!parsed.success) {
+      return reply.status(400).send({
+        error: { code: 'invalid_query', reason: 'Invalid query parameters', message: parsed.error.errors[0]?.message },
+      })
+    }
+    const { status, event, page, limit } = parsed.data
     const skip = (page - 1) * limit
 
-    const where: any = {}
-    if (query.status) where.status = query.status
-    if (query.event) where.event = query.event
+    const where: Record<string, unknown> = {}
+    if (status) where.status = status
+    if (event) where.event = event
 
     const [data, total] = await Promise.all([
       prisma.webhookDelivery.findMany({
@@ -180,17 +201,29 @@ export async function dashboardRoutes(app: FastifyInstance) {
   app.get('/dashboard/events', async (request, reply) => {
     if (!assertDashboardAuth(request, reply)) return
 
+    // Cap concurrent SSE connections to prevent FD exhaustion
+    if (activeSseConnections >= MAX_SSE_CONNECTIONS) {
+      return reply.status(503).send({
+        error: {
+          code: 'sse_capacity_exceeded',
+          reason: 'Too many active SSE connections',
+          message: `Maximum of ${MAX_SSE_CONNECTIONS} concurrent SSE connections allowed. Retry later.`,
+        },
+      })
+    }
+
+    activeSseConnections++
+    logger.debug({ activeSseConnections }, 'SSE client connected')
+
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
-      'X-Accel-Buffering': 'no', // Disable Nginx buffering
+      'X-Accel-Buffering': 'no',
     })
 
-    // Send initial ping
     reply.raw.write('event: connected\ndata: {"status":"connected"}\n\n')
 
-    // Poll DB every 3s and push new settlements
     let lastId: string | null = null
     const interval = setInterval(async () => {
       try {
@@ -214,7 +247,6 @@ export async function dashboardRoutes(app: FastifyInstance) {
       }
     }, 3_000)
 
-    // Heartbeat every 30s to prevent proxy timeout
     const heartbeat = setInterval(() => {
       reply.raw.write(': heartbeat\n\n')
     }, 30_000)
@@ -222,10 +254,10 @@ export async function dashboardRoutes(app: FastifyInstance) {
     request.socket.on('close', () => {
       clearInterval(interval)
       clearInterval(heartbeat)
-      logger.debug('SSE client disconnected')
+      activeSseConnections--
+      logger.debug({ activeSseConnections }, 'SSE client disconnected')
     })
 
-    // Never resolve — keep connection open
     await new Promise(() => {})
   })
 }
