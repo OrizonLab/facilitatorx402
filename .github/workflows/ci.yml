@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    name: Lint, Typecheck & Test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: facilitator
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: facilitatorx402_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://facilitator:password@localhost:5432/facilitatorx402_test
+      REDIS_URL: redis://localhost:6379
+      NODE_ENV: test
+      PORT: 3000
+      LOG_LEVEL: silent
+      RPC_URL: https://mainnet.base.org
+      RPC_URL_FALLBACK: https://base.publicnode.com
+      FACILITATOR_PRIVATE_KEY: 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+      FACILITATOR_ADDRESS: 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+      SUPPORTED_CHAIN_ID: 8453
+      SUPPORTED_ASSET_ADDRESS: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+      SUPPORTED_ASSET_SYMBOL: USDC
+      SUPPORTED_ASSET_DECIMALS: 6
+      PLATFORM_FEE_BPS: 50
+      DEVELOPER_SHARE_PERCENT: 20
+      FREE_MONTHLY_VOLUME: 0
+      RATE_LIMIT_VERIFY: 100
+      RATE_LIMIT_SETTLE: 50
+      RATE_LIMIT_GLOBAL: 500
+      CLOCK_SKEW_TOLERANCE_SECONDS: 30
+      CONFIRMATIONS_REQUIRED: 1
+      SETTLEMENT_TIMEOUT_SECONDS: 120
+      SETTLE_LOCK_TTL_SECONDS: 60
+      RPC_MAX_RETRIES: 3
+      RPC_CIRCUIT_BREAKER_THRESHOLD: 3
+      RPC_CIRCUIT_BREAKER_COOLDOWN_SECONDS: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run db:generate
+
+      - name: Run migrations
+        run: npm run db:migrate
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm run test
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build -t facilitatorx402:${{ github.sha }} .
