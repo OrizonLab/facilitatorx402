@@ -14,6 +14,11 @@
  *
  * In production, logs are newline-delimited JSON.
  * In development, pretty-print is enabled.
+ *
+ * Redacted fields (never appear in log output):
+ *   - FACILITATOR_PRIVATE_KEY, DATABASE_URL, REDIS_URL, METRICS_TOKEN
+ *   - req.headers.authorization (Bearer tokens)
+ *   - Any nested *.authorization, *.password, *.secret, *.privateKey
  */
 import pino from 'pino'
 import { getConfig } from './config.js'
@@ -43,14 +48,21 @@ function createLogger() {
       res: pino.stdSerializers.res,
     },
     redact: [
+      // Top-level env secrets
       'FACILITATOR_PRIVATE_KEY',
       'DATABASE_URL',
       'REDIS_URL',
       'METRICS_TOKEN',
+      // HTTP request headers
+      'req.headers.authorization',
+      'req.headers["x-admin-api-key"]',
+      // Nested object patterns (catch-all for deep objects)
       '*.authorization',
       '*.password',
       '*.secret',
       '*.privateKey',
+      '*.apiKey',
+      '*.api_key',
     ],
   })
 }

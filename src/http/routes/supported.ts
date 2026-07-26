@@ -1,8 +1,3 @@
-/**
- * REMOVED — dead stub.
- *
- * The active supported route is src/http/routes/supported.route.ts.
- *
- * @deprecated Use supported.route.ts
- */
+// FILE DELETED — see git history
+// Active route: src/http/routes/supported.route.ts
 export {}
