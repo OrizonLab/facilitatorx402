@@ -3,12 +3,11 @@
  *
  * Pipeline:
  *   1. Parse & validate the x402 payload (Zod)
- *   2. Check network & asset supported (NetworkRegistry)
+ *   2. Check network & asset via networkRegistry (single source of truth)
  *   3. Check expiration (validBefore)
- *   4. Check recipient matches configured seller address
+ *   4. Check recipient matches authorization.to
  *   5. Check amount >= requiredAmount
  *   6. ATOMIC anti-replay claim (Redis SET NX) — claimNonceRedis()
- *      → replaces the old two-step check+mark pattern
  *      → race-condition-safe: only ONE concurrent request can claim a nonce
  *   7. PostgreSQL fallback replay check (durable source of truth)
  *   8. Verify EIP-3009 signature (viem)
@@ -17,12 +16,16 @@
  *      → on failure: releaseNonceRedis()
  *  10. Return structured accepted/rejected response
  *
+ * Single source of truth for network/asset validation: networkRegistry.
+ * x402-validator.ts (config-based) is NOT used here — networkRegistry is authoritative.
+ *
  * This function is deterministic and traceable.
  * It NEVER throws — all errors are caught and returned as structured responses.
  */
 import { ulid } from 'ulid'
 import { parseX402Payload } from '../protocol/x402-parser.js'
 import { networkRegistry } from '../infrastructure/network-registry.js'
+import type { NetworkConfig, AssetConfig } from '../infrastructure/network-registry.js'
 import { verifyTransferAuthorization } from '../crypto/signature-verifier.js'
 import {
   hashSignature,
@@ -49,9 +52,8 @@ export async function runVerify(
 
   log.info({ network: body.network, asset: body.asset, invoiceId: body.invoiceId }, 'verify started')
 
-  // --- 2. Network & asset check ---
-  const networks = networkRegistry.getAll()
-  const network = networks.find((n) => n.name === body.network)
+  // --- 2. Network & asset check — networkRegistry is the single source of truth ---
+  const network = networkRegistry.getNetworkByName(body.network)
   if (!network) {
     return reject(requestId, 'unsupported_network', `Network '${body.network}' is not supported`, 402)
   }
@@ -88,9 +90,6 @@ export async function runVerify(
   }
 
   // --- 6. ATOMIC anti-replay claim (Redis SET NX) ---
-  // claimNonceRedis() atomically claims nonce + signatureHash in Redis before
-  // any further processing. This closes the race window where two concurrent
-  // requests with the same nonce could both pass a check-then-act pattern.
   const signatureHash = hashSignature(body.payload.signature)
   const nonce = auth.nonce
 
@@ -101,17 +100,14 @@ export async function runVerify(
   }
 
   // --- 7. PostgreSQL durable fallback ---
-  // Runs after Redis claim to catch cases where Redis was flushed/restarted.
   const pgReplay = await checkReplayPostgres(nonce, signatureHash)
   if (pgReplay.isDuplicate) {
-    // Release the Redis claim — the PG record is the authority, no need to block
     await releaseNonceRedis(nonce, signatureHash)
     log.warn({ reason: pgReplay.reason, nonce }, 'duplicate payment blocked (PostgreSQL fallback)')
     return reject(requestId, 'duplicate_payment', `Payment already used (${pgReplay.reason})`, 409)
   }
 
   // --- 8. Signature verification ---
-  // On failure: release Redis claim so the sender can correct and retry.
   const sigResult = await verifyTransferAuthorization(
     auth,
     body.payload.signature as `0x${string}`,
@@ -146,7 +142,6 @@ export async function runVerify(
     paymentRequestId = result.paymentRequestId
     verificationId = result.verificationId
   } catch (persistErr) {
-    // Persistence failed — release Redis claim so the request can be retried
     log.error({ persistErr }, 'persistence failed — releasing nonce claim for retry')
     await releaseNonceRedis(nonce, signatureHash)
     return reject(requestId, 'internal_error', 'Failed to persist verification. Please retry.', 500)
@@ -191,7 +186,7 @@ function reject(
 async function persistVerification(opts: {
   requestId: string
   body: Awaited<ReturnType<typeof parseX402Payload> & { success: true }>['data']
-  network: { chainId: number; name: string; id?: string }
+  network: NetworkConfig
   status: 'accepted' | 'rejected'
   errorCode?: string
   reason?: string
@@ -200,16 +195,23 @@ async function persistVerification(opts: {
 }): Promise<{ paymentRequestId: string; verificationId: string }> {
   const auth = opts.body.payload.authorization
 
+  // Guard: network record must exist in DB — fail fast with a clear error
   const networkRecord = await db.network.findUnique({
     where: { chainId: opts.network.chainId },
   })
+  if (!networkRecord) {
+    throw new Error(
+      `Network record not found in DB for chainId ${opts.network.chainId} (${opts.network.name}). ` +
+      'Ensure the seed script has been run or the network was provisioned correctly.'
+    )
+  }
 
   const paymentRequest = await db.paymentRequest.upsert({
     where: { id: opts.requestId },
     create: {
       id: opts.requestId,
       buyerAddress: auth.from,
-      networkId: networkRecord!.id,
+      networkId: networkRecord.id,
       asset: opts.body.asset,
       amount: auth.value,
       invoiceId: opts.body.invoiceId,

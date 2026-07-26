@@ -7,11 +7,13 @@
  *
  * Domain: the ERC-20 token contract (chainId + verifyingContract)
  * Types: TransferWithAuthorization (EIP-3009)
+ *
+ * domain.version is read from asset.eip712Version (set in NetworkRegistry per-asset).
+ * This avoids hardcoding '2' and allows other tokens/chains to use different versions.
  */
-import { createPublicClient, http, recoverTypedDataAddress } from 'viem'
-import { base } from 'viem/chains'
+import { recoverTypedDataAddress } from 'viem'
 import type { X402Authorization } from '../protocol/x402-parser.js'
-import type { SupportedAsset, SupportedNetwork } from '../infrastructure/network-registry.js'
+import type { AssetConfig, NetworkConfig } from '../infrastructure/network-registry.js'
 
 // EIP-3009 domain & types
 const EIP3009_TYPES = {
@@ -36,19 +38,22 @@ export interface SignatureVerificationResult {
  *
  * @param authorization - The authorization object from the x402 payload
  * @param signature     - The 65-byte EIP-712 signature (0x-prefixed)
- * @param asset         - The asset config (address = token contract)
+ * @param asset         - The asset config (address = token contract, eip712Version for domain)
  * @param network       - The network config (chainId)
  */
 export async function verifyTransferAuthorization(
   authorization: X402Authorization,
   signature: `0x${string}`,
-  asset: SupportedAsset,
-  network: SupportedNetwork
+  asset: AssetConfig,
+  network: NetworkConfig
 ): Promise<SignatureVerificationResult> {
   try {
+    // domain.version comes from the asset config — no hardcoded '2'
+    const domainVersion = asset.eip712Version ?? '2'
+
     const domain = {
-      name: asset.symbol, // 'USDC' on Base
-      version: '2',       // USDC on Base uses version 2
+      name: asset.symbol,
+      version: domainVersion,
       chainId: network.chainId,
       verifyingContract: asset.address as `0x${string}`,
     }
