@@ -1,0 +1,31 @@
+{
+  "versions": ["1"],
+  "networks": [
+    {
+      "chainId": 8453,
+      "name": "base-mainnet",
+      "nativeCurrency": "ETH",
+      "blockExplorer": "https://basescan.org",
+      "assets": [
+        {
+          "symbol": "USDC",
+          "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "decimals": 6,
+          "limits": {
+            "minAmount": "1",
+            "maxAmount": "1000000000000"
+          }
+        }
+      ]
+    }
+  ],
+  "schemes": ["exact"],
+  "extensions": ["receipts", "referral", "fee_engine"],
+  "settlementOptions": {
+    "idempotent": true,
+    "receiptAvailable": true,
+    "confirmations": 1,
+    "feeEngine": true
+  },
+  "registryLoadedAt": "2026-07-26T10:42:00.000Z"
+}

@@ -1,28 +1,36 @@
+/**
+ * Prisma client singleton — PostgreSQL only.
+ * The DATABASE_URL is validated in config.ts before this module is used.
+ */
 import { PrismaClient } from '@prisma/client'
 import { logger } from './logger.js'
 
-// Singleton Prisma client — PostgreSQL only
-export const db = new PrismaClient({
-  log: [
-    { emit: 'event', level: 'error' },
-    { emit: 'event', level: 'warn' },
-  ],
-})
+declare global {
+  // Prevent multiple instances during hot reload in development
+  // eslint-disable-next-line no-var
+  var __prisma: PrismaClient | undefined
+}
 
-db.$on('error', (e) => logger.error({ msg: e.message, target: e.target }, 'prisma error'))
-db.$on('warn',  (e) => logger.warn({ msg: e.message, target: e.target }, 'prisma warning'))
+function buildClient(): PrismaClient {
+  const client = new PrismaClient({
+    log: [
+      { level: 'query', emit: 'event' },
+      { level: 'warn', emit: 'event' },
+      { level: 'error', emit: 'event' },
+    ],
+  })
 
-export async function checkDatabaseHealth(): Promise<'ok' | 'error'> {
-  try {
-    // Raw SQL ping — works on PostgreSQL only, intentionally
-    await db.$queryRaw`SELECT 1`
-    return 'ok'
-  } catch (err: unknown) {
-    logger.error({ err }, 'database health check failed')
-    return 'error'
+  if (process.env.LOG_LEVEL === 'trace') {
+    client.$on('query', (e) => {
+      logger.trace({ query: e.query, params: e.params, duration: e.duration }, 'prisma query')
+    })
   }
+
+  client.$on('warn', (e) => logger.warn({ message: e.message }, 'prisma warning'))
+  client.$on('error', (e) => logger.error({ message: e.message }, 'prisma error'))
+
+  return client
 }
 
-export async function disconnectDb(): Promise<void> {
-  await db.$disconnect()
-}
+export const db: PrismaClient =
+  globalThis.__prisma ?? (globalThis.__prisma = buildClient())

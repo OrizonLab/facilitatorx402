@@ -1,19 +1,40 @@
+/**
+ * Pino structured logger — singleton.
+ * In production: JSON output.
+ * In development: pino-pretty for human-readable output.
+ */
 import pino from 'pino'
-import { config } from './config.js'
+import { getConfig } from './config.js'
+
+const config = getConfig()
 
 export const logger = pino({
   level: config.LOG_LEVEL,
-  transport:
-    config.NODE_ENV === 'development'
-      ? { target: 'pino-pretty', options: { colorize: true } }
-      : undefined,
+  ...(config.NODE_ENV === 'development'
+    ? {
+        transport: {
+          target: 'pino-pretty',
+          options: {
+            colorize: true,
+            translateTime: 'HH:MM:ss',
+            ignore: 'pid,hostname',
+          },
+        },
+      }
+    : {}),
   base: {
     service: 'facilitatorx402',
-    version: config.SERVICE_VERSION,
-    env: config.NODE_ENV,
+    version: process.env.npm_package_version ?? 'unknown',
   },
   redact: {
-    paths: ['FACILITATOR_PRIVATE_KEY', '*.privateKey', '*.private_key'],
-    remove: true,
+    paths: [
+      'req.headers.authorization',
+      'req.headers["x-admin-api-key"]',
+      '*.apiKey',
+      '*.privateKey',
+      '*.secret',
+      '*.apiKeyHash',
+    ],
+    censor: '[REDACTED]',
   },
 })

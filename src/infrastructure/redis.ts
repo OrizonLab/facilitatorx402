@@ -1,35 +1,34 @@
-import Redis from 'ioredis'
-import { config } from './config.js'
-
-export const redis = new Redis(config.REDIS_URL, {
-  maxRetriesPerRequest: 3,
-  enableReadyCheck: true,
-  lazyConnect: true,
-})
-
-redis.on('error', (err: Error) => {
-  console.error('[Redis] Connection error:', err.message)
-})
-
-export async function checkRedisHealth(): Promise<boolean> {
-  try {
-    const result = await redis.ping()
-    return result === 'PONG'
-  } catch {
-    return false
-  }
-}
-
 /**
- * Acquire a distributed lock using SET NX EX.
- * Returns true if lock was acquired, false otherwise.
+ * Redis singleton — IORedis client.
+ * Used by BullMQ queues and the NetworkRegistry background reload.
  */
-export async function acquireLock(key: string, ttlSeconds: number): Promise<boolean> {
-  const lockKey = `lock:${key}`
-  const result = await redis.set(lockKey, '1', 'EX', ttlSeconds, 'NX')
-  return result === 'OK'
+import IORedis from 'ioredis'
+import { getConfig } from './config.js'
+import { logger } from './logger.js'
+
+let _redis: IORedis | null = null
+
+export function createRedis(): IORedis {
+  const config = getConfig()
+  const client = new IORedis(config.REDIS_URL, {
+    maxRetriesPerRequest: null, // Required by BullMQ
+    enableReadyCheck: false,
+    lazyConnect: false,
+  })
+
+  client.on('connect', () => logger.info('Redis connected'))
+  client.on('error', (err) => logger.error({ err }, 'Redis error'))
+  client.on('close', () => logger.warn('Redis connection closed'))
+
+  return client
 }
 
-export async function releaseLock(key: string): Promise<void> {
-  await redis.del(`lock:${key}`)
+export function getRedis(): IORedis {
+  if (!_redis) _redis = createRedis()
+  return _redis
+}
+
+/** Used by health.route.ts for lightweight check */
+export const redis = {
+  ping: async (): Promise<string> => getRedis().ping(),
 }
