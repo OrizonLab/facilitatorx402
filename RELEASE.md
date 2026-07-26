@@ -1,5 +1,4 @@
+<!-- This file is kept as a release marker. See CHANGELOG.md for full history. -->
 # Release v1.0.0
 
-SHA: a47366b9fef83ffbe45a4ce3e4644533ebe68934
-Date: 2026-07-26
-Tag: v1.0.0
+See [CHANGELOG.md](./CHANGELOG.md) for the complete release notes.
