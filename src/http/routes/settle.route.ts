@@ -7,6 +7,10 @@
  * The settlement job is enqueued in BullMQ (Redis) and processed asynchronously.
  * For V1, we wait up to 30s for confirmation before returning pending status.
  *
+ * Webhooks fired:
+ *   payment.settled  — on confirmed status
+ *   payment.failed   — on failed status
+ *
  * HTTP status codes:
  *   200 — confirmed or pending
  *   400 — invalid payload
@@ -17,6 +21,7 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { runSettle } from '../../application/settle.service.js'
+import { notifyWebhook } from '../../application/webhook.service.js'
 import { logger } from '../../infrastructure/logger.js'
 
 const SettleBodySchema = z.object({
@@ -44,7 +49,7 @@ export async function registerSettleRoute(app: FastifyInstance): Promise<void> {
         '5. Wait for confirmation',
         '6. Compute fees (platform + developer share)',
         '7. Persist settlement + receipt to PostgreSQL',
-        '8. Enqueue webhook delivery',
+        '8. Fire webhook `payment.settled` or `payment.failed` (async)',
       ].join('\n'),
       body: {
         type: 'object',
@@ -93,7 +98,36 @@ export async function registerSettleRoute(app: FastifyInstance): Promise<void> {
 
       if (result.status === 'failed' || result.status === 'rejected') {
         const httpStatus = (result as any).httpStatus ?? 402
+
+        // Notify webhook on failure too (payment.failed)
+        notifyWebhook({
+          event: 'payment.failed',
+          sellerId: (result as any).sellerId,
+          payload: {
+            requestId,
+            error: (result as any).error,
+            failedAt: (result as any).failedAt ?? new Date().toISOString(),
+          },
+        }).catch((err) => logger.warn({ err, requestId }, 'webhook notify failed (payment.failed)'))
+
         return reply.status(httpStatus).send(result)
+      }
+
+      // Notify webhook on success (payment.settled)
+      if (result.status === 'confirmed') {
+        notifyWebhook({
+          event: 'payment.settled',
+          sellerId: (result as any).sellerId,
+          payload: {
+            requestId: result.requestId,
+            settlementId: result.settlementId,
+            txHash: result.txHash,
+            feeAmount: result.feeAmount,
+            developerShare: result.developerShare,
+            receiptId: result.receiptId,
+            confirmedAt: result.confirmedAt,
+          },
+        }).catch((err) => logger.warn({ err, requestId }, 'webhook notify failed (payment.settled)'))
       }
 
       return reply.status(200).send(result)

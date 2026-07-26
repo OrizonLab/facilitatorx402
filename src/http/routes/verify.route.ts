@@ -4,8 +4,8 @@
  * Validates an x402 payment proof.
  * Fast, deterministic, and fully traceable.
  *
- * Request body: X402VerifyBodySchema (see x402-parser.ts)
- * Response: VerifyResponse (accepted or rejected)
+ * On success  → notifies webhook event: payment.verified
+ * On failure  → no webhook (rejected payments are not events)
  *
  * HTTP status codes:
  *   200 — accepted
@@ -17,6 +17,7 @@
 import type { FastifyInstance } from 'fastify'
 import { ulid } from 'ulid'
 import { runVerify } from '../../application/verify.service.js'
+import { notifyWebhook } from '../../application/webhook.service.js'
 import { logger } from '../../infrastructure/logger.js'
 
 export async function registerVerifyRoute(app: FastifyInstance): Promise<void> {
@@ -35,6 +36,7 @@ export async function registerVerifyRoute(app: FastifyInstance): Promise<void> {
         '5. Anti-replay check (Redis + PostgreSQL)',
         '6. Verify EIP-3009 signature (viem)',
         '7. Persist to PostgreSQL',
+        '8. Fire webhook `payment.verified` (async, non-blocking)',
         '',
         'Returns `status: accepted` or `status: rejected` with a stable error code.',
       ].join('\n'),
@@ -102,6 +104,23 @@ export async function registerVerifyRoute(app: FastifyInstance): Promise<void> {
         const httpStatus = (result as any).httpStatus ?? 402
         return reply.status(httpStatus).send(result)
       }
+
+      // Fire webhook asynchronously — never block the HTTP response
+      notifyWebhook({
+        event: 'payment.verified',
+        sellerId: (result as any).sellerId,
+        payload: {
+          requestId: result.requestId,
+          verificationId: result.verificationId,
+          invoiceId: result.invoiceId,
+          network: result.network,
+          asset: result.asset,
+          amount: result.amount,
+          from: result.from,
+          to: result.to,
+          verifiedAt: result.verifiedAt,
+        },
+      }).catch((err) => logger.warn({ err, requestId }, 'webhook notify failed (payment.verified)'))
 
       return reply.status(200).send(result)
     } catch (err: any) {

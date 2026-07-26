@@ -1,162 +1,84 @@
 # facilitatorx402
 
-A self-hosted x402 payment facilitator — production-ready, written in Node.js 20+, TypeScript, Fastify, Prisma, Redis and viem.
+[![CI](https://github.com/OrizonLab/facilitatorx402/actions/workflows/ci.yml/badge.svg)](https://github.com/OrizonLab/facilitatorx402/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Node.js 20+](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue)](https://www.typescriptlang.org/)
 
-## Overview
+**facilitatorx402** est un facilitateur de paiement x402 self-hosted — une couche de confiance entre votre service payant et le réseau blockchain utilisé pour régler les paiements.
 
-facilitatorx402 is a trust layer between a paying service (the seller) and a blockchain network used to settle payments. It implements the [x402 protocol](https://x402.org), handling verification, idempotent settlement, anti-replay protection, receipts and full observability.
+> Mono-réseau · mono-asset · mono-schéma · production-ready V1
 
-**Stack:** Node.js 20 · TypeScript · Fastify · Zod · Prisma · PostgreSQL · Redis · BullMQ · viem · pino · prom-client · Docker · GitHub Actions
-
----
-
-## Quick Start
+## Démarrage en 60 secondes
 
 ```bash
-# 1. Clone and install
 git clone https://github.com/OrizonLab/facilitatorx402.git
 cd facilitatorx402
-npm install
-
-# 2. Configure
-cp .env.example .env
-# Edit .env with your RPC URL, private key and chain config
-
-# 3. Start services
-docker-compose -f docker-compose.dev.yml up -d postgres redis
-
-# 4. Run migrations
-npm run db:migrate:dev
-
-# 5. Start dev server
-npm run dev
+cp .env.example .env          # adapter DATABASE_URL, REDIS_URL, WALLET_PRIVATE_KEY
+docker-compose up -d           # PostgreSQL + Redis
+npx prisma migrate dev         # migrations
+npm install && npm run dev     # démarrage
+curl http://localhost:3000/health
 ```
 
-Or run the full stack with Docker:
+## Endpoints
 
-```bash
-docker-compose up
-```
+| Méthode | Route | Description |
+|---|---|---|
+| `POST` | `/verify` | Valide une preuve de paiement x402 |
+| `POST` | `/settle` | Règle la transaction on-chain (idempotent) |
+| `GET` | `/receipts/:id` | Reçu de règlement pour audit |
+| `GET` | `/supported` | Réseaux, assets, schémas supportés |
+| `GET` | `/health` | Statut API, DB, Redis, RPC |
+| `GET` | `/metrics` | Métriques Prometheus |
+| `POST` | `/sellers` | Créer un compte seller |
+| `POST` | `/sellers/:id/webhooks` | Enregistrer un webhook |
+| `GET` | `/dashboard` | Dashboard opérateur UI |
+| `GET` | `/dashboard/events` | Stream SSE temps réel |
 
----
-
-## API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/verify` | Verify an x402 payment proof |
-| `POST` | `/settle` | Settle a verified payment on-chain |
-| `GET` | `/supported` | Supported networks, assets and schemes |
-| `GET` | `/health` | Service health (DB, Redis, RPC) |
-| `GET` | `/metrics` | Prometheus metrics |
-| `GET` | `/receipts/:id` | Get a settlement receipt |
-
----
-
-## Seller Integration Flow
+## Flux de paiement
 
 ```
-Buyer                   Seller                  Facilitator            Blockchain
-  │                       │                          │                      │
-  │── GET /resource ──────►│                          │                      │
-  │                       │── 402 Payment Required ──►│                      │
-  │◄── 402 + invoice ─────│                          │                      │
-  │                       │                          │                      │
-  │── sign + POST /verify ─────────────────────────►│                      │
-  │◄── { accepted: true, requestId } ───────────────│                      │
-  │                       │                          │                      │
-  │── POST /settle ─────────────────────────────────►│                      │
-  │                       │                          │── transfer() ────────►│
-  │                       │                          │◄── txHash ────────────│
-  │◄── { settled, receiptId } ──────────────────────│                      │
-  │                       │                          │                      │
-  │── GET /receipts/:id ──────────────────────────►│                      │
-  │◄── receipt ─────────────────────────────────────│                      │
+Client → POST /verify → POST /settle → GET /receipts/:id → accès accordé
 ```
 
----
+Voir [docs/seller-integration.md](docs/seller-integration.md) pour le guide complet.
 
-## Error Model
+## Stack
 
-All endpoints return errors in the same structure:
+Node.js 20+ · TypeScript · Fastify · Zod · Prisma · PostgreSQL · Redis · BullMQ · viem · pino · prom-client
 
-```json
-{
-  "error": {
-    "code": "expired_payment",
-    "reason": "Payment proof has expired",
-    "message": "The payment proof expired at 2025-01-01T00:00:00Z",
-    "correlationId": "req_01HX..."
-  }
-}
-```
+## Documentation
 
-### Error Codes
-
-| code | HTTP | when |
-|------|------|------|
-| `unsupported_network` | 422 | Unknown chainId |
-| `unsupported_asset` | 422 | Unknown asset address |
-| `expired_payment` | 422 | `expiresAt` passed |
-| `invalid_signature` | 422 | Bad signature |
-| `invalid_nonce` | 422 | Nonce already used |
-| `duplicate_payment` | 409 | Anti-replay blocked |
-| `settlement_pending` | 202 | Lock active |
-| `duplicate_settlement` | 200 | Idempotent return |
-| `settlement_failed` | 422 | On-chain revert |
-| `internal_error` | 500 | Unexpected error |
-
----
-
-## Architecture
-
-```
-src/
-  http/           # Fastify routes, error handler, app factory
-  application/    # Use cases (verify-payment, settle-payment)
-  protocol/       # x402 schema validation, network/asset checks
-  crypto/         # Signature verification, anti-replay, hashing
-  settlement/     # On-chain transfer, fee calculator, worker
-  infrastructure/ # Prisma DB, Redis, metrics, logger, config
-prisma/           # Schema, migrations, seed
-docs/             # API docs, guides, architecture
-.github/workflows/ # CI/CD
-```
-
----
+| Document | Contenu |
+|---|---|
+| [docs/quickstart.md](docs/quickstart.md) | Setup de 0 à intégration |
+| [docs/api-reference.md](docs/api-reference.md) | Référence complète des endpoints |
+| [docs/seller-integration.md](docs/seller-integration.md) | Guide intégration seller step-by-step |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Diagrammes, décisions techniques |
+| [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | Conventions, workflow, tests |
 
 ## Configuration
 
-All config is loaded from environment variables. See `.env.example` for the full list.
-
-The service **crashes at startup** if any required variable is missing or invalid.
-
----
-
-## Running Tests
+Toutes les variables sont dans `.env.example`. Aucun secret dans le code.
 
 ```bash
-npm test                 # Run all tests
-npm run test:watch       # Watch mode
-npm run test:coverage    # With coverage report
+DATABASE_URL=postgresql://user:password@localhost:5432/facilitatorx402
+REDIS_URL=redis://localhost:6379
+WALLET_PRIVATE_KEY=0x...       # clé de signature des tx on-chain
+SUPPORTED_NETWORK=base-mainnet
+SUPPORTED_ASSET=USDC
+PLATFORM_FEE_BPS=30            # 0.3% de commission
+DASHBOARD_TOKEN=...            # accès dashboard opérateur
 ```
 
----
+## Tests
 
-## Roadmap
+```bash
+npm test              # tous les tests
+npm run test:coverage # rapport de couverture
+```
 
-- [x] Phase 0 — Cadrage
-- [x] Phase 1 — Fondations repo
-- [x] Phase 2 — Endpoints opérateur
-- [x] Phase 3 — Moteur verify
-- [x] Phase 4 — Moteur settle
-- [x] Phase 5 — Persistance & Audit
-- [ ] Phase 6 — Sécurité & Hardening
-- [ ] Phase 7 — Intégration seller e2e
-- [ ] Phase 8 — Monétisation
+## Licence
 
----
-
-## License
-
-MIT
+MIT — voir [LICENSE](LICENSE)

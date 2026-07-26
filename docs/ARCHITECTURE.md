@@ -1,116 +1,150 @@
-# facilitatorx402 — Architecture & Expansion Guide
+# Architecture — facilitatorx402
 
-## Overview
+## Vue d'ensemble
 
-facilitatorx402 is a self-hosted x402 payment facilitator designed to scale from
-a simple payment proxy to a full multi-agent, multi-device payment infrastructure.
-
-```
-                    ┌───────────────────────┐
-                    │  Sellers / Buyers         │
-                    │  (servers, robots, IoT,   │
-                    │   AI agents, humans)       │
-                    └───────────────────────┘
-                              │
-              REST API  /  SDK  /  MCP
-                              │
-                    ┌───────┳───────┐
-                    │ facilitatorx402 │
-                    │  Fastify + Node  │
-                    └───────┬───────┘
-                            │
-          ┌────────────┬─────────────┐
-          │           │             │
-     PostgreSQL      Redis      Blockchain RPC
-     (Prisma)    (BullMQ +      (viem + circuit
-                  pub/sub)        breaker)
-```
-
-## Module map
+facilitatorx402 est une couche de confiance entre un seller (service payant) et le réseau blockchain utilisé pour régler les paiements.
 
 ```
-src/
-├── http/                    HTTP layer
-│   ├── routes/
-│   │   ├── health.route.ts
-│   │   ├── supported.route.ts
-│   │   ├── verify.route.ts
-│   │   ├── settle.route.ts
-│   │   ├── receipts.route.ts
-│   │   ├── sellers.route.ts     ← API Key + Webhook mgmt
-│   │   ├── device-auth.route.ts ← OAuth2 Device Flow (robots)
-│   │   ├── sse.route.ts         ← Real-time SSE streaming
-│   │   └── mcp.route.ts         ← MCP manifest for AI agents
-│   ├── openapi.ts             OpenAPI + Swagger UI
-│   └── app.ts
-├── application/             Use cases
-├── protocol/                x402 parsing
-├── crypto/                  Signature verification
-├── settlement/              On-chain settlement
-├── infrastructure/
-│   ├── config.ts
-│   ├── db.ts
-│   ├── redis.ts
-│   ├── logger.ts
-│   ├── metrics.ts
-│   ├── api-key.ts             ← Key generation + verification
-│   ├── webhook-dispatcher.ts  ← HMAC-signed webhook delivery
-│   └── network-registry.ts    ← Dynamic multi-network config
-└── sdk/
-    └── client/                ← @orizonlab/x402-client SDK
-        ├── index.ts
-        ├── facilitator-client.ts
-        ├── facilitator-error.ts
-        └── types.ts
+┌──────────────────────────────────────────────────────────────────────┐
+│                         SELLER SERVICE                               │
+│   1. GET /resource → 402 Payment Required (avec x402 parameters)     │
+│   2. Client envoie POST /verify au facilitateur                      │
+│   3. POST /settle → tx on-chain                                      │
+│   4. Seller accorde l'accès sur reçu de settlement                   │
+└──────────────────────────────────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                      FACILITATORX402                                 │
+│                                                                      │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────────┐    │
+│  │ /verify  │  │ /settle  │  │/receipts │  │ /health          │    │
+│  │          │  │          │  │/:id      │  │ /supported       │    │
+│  │ Fastify  │  │ Fastify  │  │          │  │ /metrics         │    │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └──────────────────┘    │
+│       │             │             │                                  │
+│       ▼             ▼             ▼                                  │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │                   Application Layer                          │   │
+│  │  verify.service  │  settle.service  │  webhook.service       │   │
+│  └──────────┬────────────────┬─────────────────┬───────────────┘   │
+│             │                │                 │                    │
+│       ┌─────▼──────┐  ┌──────▼──────┐  ┌───────▼──────┐           │
+│       │  Protocol  │  │  Settlement │  │  BullMQ      │           │
+│       │  x402      │  │  viem       │  │  webhook     │           │
+│       │  parser    │  │  on-chain   │  │  queue       │           │
+│       └─────┬──────┘  └──────┬──────┘  └───────┬──────┘           │
+│             │                │                 │                    │
+│       ┌─────▼────────────────▼─────────────────▼──────┐            │
+│       │              Infrastructure                    │            │
+│       │  PostgreSQL  │  Redis  │  pino  │  Prometheus  │            │
+│       └────────────────────────────────────────────────┘            │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-## Integration patterns by consumer type
+## Flux complet — verify → settle → receipt
 
-### Traditional backend server
-```typescript
-import { FacilitatorClient } from '@orizonlab/x402-client'
-const client = new FacilitatorClient({ url, apiKey })
-const { receiptId } = await client.pay(paymentProof)
 ```
-
-### AI agent (MCP-compatible)
-```
-GET /.well-known/mcp  → agent discovers tools automatically
-Tool: verify_payment + settle_payment
-No custom code needed — any MCP-compliant agent works out of the box.
-```
-
-### Domestic robot (OAuth2 Device Flow)
-```
-1. POST /device/authorize  → device_code + user_code displayed on screen
-2. User scans QR / enters user_code on phone
-3. POST /device/token (poll)  → access_token (API key)
-4. Robot uses SDK with { apiKey: access_token }
-5. Subscribe to SSE: GET /settlements/:id/stream for instant confirmation
-```
-
-### IoT sensor / embedded device
-```
-Minimal HTTP client — no SDK needed:
-POST /verify  { ...proofPayload }
-POST /settle  { requestId }
-GET  /receipts/:id
+Client                 Seller              Facilitateur           Blockchain
+  │                     │                      │                      │
+  │─── GET /resource ──►│                      │                      │
+  │                     │──── 402 + params ───►│                      │
+  │                     │                      │                      │
+  │────── POST /verify ─────────────────────►  │                      │
+  │                     │           parse + validate payload          │
+  │                     │           anti-replay check (Redis + PG)    │
+  │                     │           verify EIP-3009 signature         │
+  │                     │           persist payment_verification      │
+  │◄─── 200 accepted ───────────────────────── │                      │
+  │                     │                      │                      │
+  │────── POST /settle ─────────────────────►  │                      │
+  │                     │           check idempotence                 │
+  │                     │           lock (Redis SETNX)                │
+  │                     │           ──── transferWithAuthorization ──►│
+  │                     │           wait confirmation (30s timeout)   │
+  │                     │           persist settlement + receipt      │
+  │                     │           fire webhook payment.settled      │
+  │◄─── 200 confirmed ──────────────────────── │                      │
+  │                     │                      │                      │
+  │─── GET /receipts/id ────────────────────►  │                      │
+  │◄─── receipt JSON ───────────────────────── │                      │
+  │                     │                      │                      │
+  │─── accès accordé ──►│                      │                      │
 ```
 
-## Roadmap phases
+## Modules
 
-| Phase | Feature | Status |
-|-------|---------|--------|
-| 0-8   | Core verify/settle/receipts | ✅ Done |
-| 9     | SDK @orizonlab/x402-client | ✅ Done |
-| 10    | OpenAPI + /docs | ✅ Done |
-| 11    | Webhooks push | ✅ Done |
-| 12    | API Key management + seller registration | ✅ Done |
-| 13    | Multi-network dynamic registry | ✅ Done |
-| 14    | SSE real-time streaming | ✅ Done |
-| 15    | MCP manifest for AI agents | ✅ Done |
-| 16    | OAuth2 Device Flow for robots | ✅ Done |
-| 17    | Redis pub/sub for SSE (worker → HTTP) | 🟡 Next |
-| 18    | Prisma migration for sellers + webhooks | 🟡 Next |
-| 19    | Admin API (PUT /admin/networks/:chainId) | 🟡 Next |
-| 20    | Solana adapter (non-EVM expansion) | 🔵 Future |
+### `src/http`
+Couche transport. Routes Fastify, schemas Zod, error handler, OpenAPI.
+
+### `src/application`
+Cas d'usage métier. `verify.service`, `settle.service`, `webhook.service`, `seller.service`. Aucune dépendance directe vers Fastify.
+
+### `src/protocol`
+Parser x402, validateur, types. Décodage du payload, vérification de version, schéma.
+
+### `src/crypto`
+Vérification de signature EIP-3009 via viem. Isolation cryptographique testable indépendamment.
+
+### `src/settlement`
+Soumission on-chain via viem. Circuit breaker, retry, failover RPC.
+
+### `src/infrastructure`
+Dépendances externes : Prisma, Redis, BullMQ, pino, Prometheus, config.
+
+### `src/infrastructure/workers`
+Workers BullMQ : `settlement.worker.ts` (tx on-chain), `webhook.worker.ts` (livraison HTTP).
+
+## Décisions techniques
+
+### Pourquoi Fastify ?
+Fastify est 2-3× plus rapide qu'Express pour les I/O intensifs. Schéma JSON natif (ajv), plugins TypeScript-first, et serialization rapide.
+
+### Pourquoi viem ?
+viem est tree-shakeable, TypeScript-first, et préféré à ethers v5 pour les nouvelles intégrations. L'ABI `transferWithAuthorization` est codée statiquement dans `src/settlement`.
+
+### Pourquoi BullMQ ?
+Les settlements on-chain peuvent prendre 30s+. BullMQ permet :
+- retry automatique avec backoff exponentiel
+- jobs persistés dans Redis (survie aux redémarrages)
+- concurrence contrôlée
+- visibilité dans Bull Board
+
+### Pourquoi Prisma ?
+Migrations typées, client TypeScript généré, `prisma studio` pour l'inspection. Les contraintes d'unicité (signature_hash, nonce, tx_hash) sont définies au niveau DB + Prisma.
+
+### Anti-replay à deux niveaux
+1. **Redis** : `SET nonce:<value> 1 EX 3600 NX` — vérification rapide en mémoire
+2. **PostgreSQL** : contrainte `UNIQUE(nonce)` et `UNIQUE(signature_hash)` — garantie durée de vie
+
+### Idempotence sur /settle
+1. Vérification DB : `findUnique({ where: { requestId } })` — retourne immédiatement si existe
+2. Verrou Redis : `SET lock:settle:<requestId> 1 EX 60 NX` — bloque les appels concurrents
+3. Résultat identique garanti : même input → même output, toujours
+
+## Structure du schéma DB
+
+```
+payment_requests
+  └── payment_verifications (1:N)
+        └── payment_settlements (1:1)
+              └── payment_receipts (1:1)
+
+sellers
+  └── webhook_subscriptions (1:1)
+        └── webhook_deliveries (1:N)
+```
+
+## Variables d'environnement critiques
+
+| Variable | Description |
+|---|---|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `REDIS_URL` | Redis connection string |
+| `WALLET_PRIVATE_KEY` | Clé de signature des tx on-chain |
+| `SUPPORTED_NETWORK` | Réseau V1 (ex: `base-mainnet`) |
+| `SUPPORTED_ASSET` | Asset V1 (ex: `USDC`) |
+| `PLATFORM_FEE_BPS` | Commission en basis points (ex: `30` = 0.3%) |
+| `DASHBOARD_TOKEN` | Token d'accès au dashboard opérateur |
+
+Voir `.env.example` pour la liste complète.
