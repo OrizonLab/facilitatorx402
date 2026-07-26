@@ -6,47 +6,55 @@
  *
  * Usage:
  *   import { getConfig } from './config.js'
- *   const { DATABASE_URL, FACILITATOR_PRIVATE_KEY } = getConfig()
+ *   const cfg = getConfig()
  */
 import { z } from 'zod'
 
 const ConfigSchema = z.object({
-  // Database
+  // ── Database ──────────────────────────────────────────────────────────────
   DATABASE_URL: z.string().url().min(1),
 
-  // Redis
+  // ── Redis ─────────────────────────────────────────────────────────────────
   REDIS_URL: z.string().min(1),
 
-  // Blockchain
+  // ── Blockchain ────────────────────────────────────────────────────────────
   FACILITATOR_PRIVATE_KEY: z
     .string()
-    .regex(/^0x[0-9a-fA-F]{64}$/, 'FACILITATOR_PRIVATE_KEY must be a 0x-prefixed 32-byte hex string'),
+    .regex(/^0x[0-9a-fA-F]{64}$/, 'Must be a 0x-prefixed 32-byte hex string'),
 
   RPC_URL: z.string().url(),
   RPC_URL_FALLBACK: z.string().optional().default(''),
   MIN_CONFIRMATIONS: z.coerce.number().int().min(1).max(10).default(2),
+  RPC_CALL_TIMEOUT_MS: z.coerce.number().int().min(1000).default(10_000),
 
-  // Fee engine
+  // ── Circuit Breaker ───────────────────────────────────────────────────────
+  CIRCUIT_BREAKER_FAILURE_THRESHOLD: z.coerce.number().int().min(1).default(5),
+  CIRCUIT_BREAKER_RESET_TIMEOUT_MS: z.coerce.number().int().min(1000).default(30_000),
+
+  // ── Fee engine ────────────────────────────────────────────────────────────
   PLATFORM_FEE_BPS: z.coerce.number().int().min(0).max(10_000).default(50),
   DEVELOPER_SHARE_BPS: z.coerce.number().int().min(0).max(10_000).default(20),
 
-  // HTTP server
+  // ── HTTP server ───────────────────────────────────────────────────────────
   HOST: z.string().default('0.0.0.0'),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
 
-  // Rate limiting
+  // ── Rate limiting ─────────────────────────────────────────────────────────
   RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(100),
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().min(1000).default(60_000),
+  RATE_LIMIT_SELLER_VERIFY: z.coerce.number().int().min(1).default(60),
+  RATE_LIMIT_SELLER_SETTLE: z.coerce.number().int().min(1).default(30),
 
-  // Security
+  // ── Security ──────────────────────────────────────────────────────────────
   METRICS_TOKEN: z.string().optional().default(''),
+  DASHBOARD_TOKEN: z.string().optional().default(''),
 
-  // Logging
+  // ── Logging ───────────────────────────────────────────────────────────────
   LOG_LEVEL: z
     .enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal'])
     .default('info'),
 
-  // Environment
+  // ── Environment ───────────────────────────────────────────────────────────
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 })
 
@@ -68,8 +76,13 @@ export function loadConfig(): Config {
 }
 
 export function getConfig(): Config {
-  if (!_config) {
-    return loadConfig()
-  }
+  if (!_config) return loadConfig()
   return _config
 }
+
+// Alias pratique — compat avec les imports existants `import { config }`
+export const config = new Proxy({} as Config, {
+  get(_target, prop: string) {
+    return getConfig()[prop as keyof Config]
+  },
+})

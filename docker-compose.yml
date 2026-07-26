@@ -1,73 +1,100 @@
-# ============================================================
-# facilitatorx402 — docker-compose (local dev + CI)
-# Services: app, postgres, redis
-# ============================================================
+# docker-compose.yml — facilitatorx402
+# Stack complète : PostgreSQL + Redis + Prometheus + Grafana
+#
+# Démarrage :
+#   docker-compose up -d
+#   npx prisma migrate dev
+#   npm run dev
+#
+# URLs :
+#   API          → http://localhost:3000
+#   Dashboard    → http://localhost:3000/dashboard
+#   Metrics      → http://localhost:3000/metrics
+#   Prometheus   → http://localhost:9090
+#   Grafana      → http://localhost:3001  (admin / admin)
+
 version: '3.9'
 
 services:
-
+  # ── PostgreSQL ─────────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
+    container_name: facilitatorx402-postgres
     restart: unless-stopped
     environment:
+      POSTGRES_USER: facilitator
+      POSTGRES_PASSWORD: facilitator
       POSTGRES_DB: facilitatorx402
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
     ports:
       - '5432:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      test: ['CMD-SHELL', 'pg_isready -U facilitator -d facilitatorx402']
       interval: 5s
       timeout: 5s
       retries: 10
 
+  # ── Redis ──────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
+    container_name: facilitatorx402-redis
     restart: unless-stopped
     ports:
       - '6379:6379'
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
       timeout: 3s
       retries: 10
 
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+  # ── Prometheus ─────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: facilitatorx402-prometheus
     restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    environment:
-      NODE_ENV: production
-      DATABASE_URL: postgresql://postgres:password@postgres:5432/facilitatorx402
-      REDIS_URL: redis://redis:6379
-      FACILITATOR_PRIVATE_KEY: ${FACILITATOR_PRIVATE_KEY}
-      RPC_URL: ${RPC_URL}
-      RPC_URL_FALLBACK: ${RPC_URL_FALLBACK:-""}
-      MIN_CONFIRMATIONS: ${MIN_CONFIRMATIONS:-2}
-      PLATFORM_FEE_BPS: ${PLATFORM_FEE_BPS:-50}
-      DEVELOPER_SHARE_BPS: ${DEVELOPER_SHARE_BPS:-20}
-      PORT: 3000
-      HOST: 0.0.0.0
-      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-100}
-      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-60000}
-      METRICS_TOKEN: ${METRICS_TOKEN:-""}
-      LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
-      - '3000:3000'
+      - '9090:9090'
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus-rules.yml:/etc/prometheus/rules.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
     healthcheck:
-      test: ['CMD-SHELL', 'wget -qO- http://localhost:3000/health || exit 1']
-      interval: 30s
-      timeout: 10s
-      start_period: 15s
-      retries: 3
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:9090/-/healthy']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Grafana ────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: facilitatorx402-grafana
+    restart: unless-stopped
+    ports:
+      - '3001:3000'
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/facilitatorx402.json
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana-provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana-dashboard.json:/var/lib/grafana/dashboards/facilitatorx402.json:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
 
 volumes:
   postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:

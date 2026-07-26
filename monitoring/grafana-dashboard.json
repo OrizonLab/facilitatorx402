@@ -1,0 +1,92 @@
+{
+  "title": "facilitatorx402 — Opérateur V1",
+  "uid": "facilitatorx402-v1",
+  "version": 1,
+  "schemaVersion": 36,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "tags": ["facilitatorx402", "x402", "payments"],
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Verify — Total",
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 3 },
+      "targets": [{ "expr": "sum(verify_total)", "legendFormat": "Total" }],
+      "options": { "colorMode": "background", "graphMode": "area" }
+    },
+    {
+      "id": 2, "type": "stat", "title": "Verify — Acceptés",
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 3 },
+      "targets": [{ "expr": "sum(verify_total{status=\"accepted\"})", "legendFormat": "Acceptés" }],
+      "options": { "colorMode": "background", "color": { "fixedColor": "green", "mode": "fixed" } }
+    },
+    {
+      "id": 3, "type": "stat", "title": "Verify — Rejetés",
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 3 },
+      "targets": [{ "expr": "sum(verify_total{status=\"rejected\"})", "legendFormat": "Rejetés" }],
+      "options": { "colorMode": "background", "color": { "fixedColor": "red", "mode": "fixed" } }
+    },
+    {
+      "id": 4, "type": "stat", "title": "Settle — Confirmés",
+      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 3 },
+      "targets": [{ "expr": "sum(settle_total{status=\"confirmed\"})", "legendFormat": "Confirmés" }],
+      "options": { "colorMode": "background", "color": { "fixedColor": "green", "mode": "fixed" } }
+    },
+    {
+      "id": 5, "type": "stat", "title": "Settle — Échoués",
+      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 3 },
+      "targets": [{ "expr": "sum(settle_total{status=\"failed\"})", "legendFormat": "Échoués" }],
+      "options": { "colorMode": "background", "color": { "fixedColor": "red", "mode": "fixed" } }
+    },
+    {
+      "id": 6, "type": "stat", "title": "Circuit Breaker RPC",
+      "gridPos": { "x": 20, "y": 0, "w": 4, "h": 3 },
+      "targets": [{ "expr": "circuit_breaker_state{name=\"rpc-primary\"}", "legendFormat": "Primary" }],
+      "options": {
+        "colorMode": "background",
+        "thresholds": { "steps": [{ "value": 0, "color": "green" }, { "value": 1, "color": "red" }] }
+      }
+    },
+    {
+      "id": 10, "type": "timeseries", "title": "Verify — Latence p50/p95",
+      "gridPos": { "x": 0, "y": 3, "w": 12, "h": 6 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(verify_duration_seconds_bucket[5m]))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, rate(verify_duration_seconds_bucket[5m]))", "legendFormat": "p95" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 11, "type": "timeseries", "title": "Settle — Latence p50/p95",
+      "gridPos": { "x": 12, "y": 3, "w": 12, "h": 6 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(settle_duration_seconds_bucket[10m]))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, rate(settle_duration_seconds_bucket[10m]))", "legendFormat": "p95" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 20, "type": "timeseries", "title": "BullMQ — Profondeur des queues",
+      "gridPos": { "x": 0, "y": 9, "w": 12, "h": 6 },
+      "targets": [
+        { "expr": "bullmq_queue_depth{queue=\"settlement\"}", "legendFormat": "settlement" },
+        { "expr": "bullmq_queue_depth{queue=\"webhook\"}", "legendFormat": "webhook" }
+      ]
+    },
+    {
+      "id": 21, "type": "timeseries", "title": "Doublons bloqués / Rate limit hits",
+      "gridPos": { "x": 12, "y": 9, "w": 12, "h": 6 },
+      "targets": [
+        { "expr": "rate(duplicate_blocked_total[5m])", "legendFormat": "doublons/s" },
+        { "expr": "rate(rate_limit_hit_total[5m])", "legendFormat": "rate limit/s" }
+      ]
+    },
+    {
+      "id": 30, "type": "timeseries", "title": "Commission & Developer Share",
+      "gridPos": { "x": 0, "y": 15, "w": 24, "h": 6 },
+      "targets": [
+        { "expr": "rate(commission_generated_total[10m])", "legendFormat": "commission/min" },
+        { "expr": "rate(developer_share_total[10m])", "legendFormat": "dev share/min" }
+      ]
+    }
+  ]
+}

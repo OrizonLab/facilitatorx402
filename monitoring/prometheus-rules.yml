@@ -1,0 +1,189 @@
+# Prometheus alerting rules — facilitatorx402
+# Importer dans Prometheus via rule_files ou Alertmanager.
+#
+# Catégories :
+#   - Disponibilité service
+#   - Moteur verify
+#   - Moteur settle
+#   - Circuit breaker RPC
+#   - Rate limiting
+#   - BullMQ workers
+#   - Base de données
+
+groups:
+  # ── Disponibilité ──────────────────────────────────────────────────────────
+  - name: facilitatorx402.availability
+    rules:
+      - alert: ServiceDown
+        expr: up{job="facilitatorx402"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "facilitatorx402 est down"
+          description: "Le service ne répond plus depuis {{ $value }}s. Vérifier les logs."
+
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_request_duration_seconds_count{status_code=~"5.."}[5m]))
+          /
+          sum(rate(http_request_duration_seconds_count[5m])) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Taux d'erreur HTTP élevé"
+          description: "Plus de 5% des requêtes retournent 5xx sur les 5 dernières minutes."
+
+      - alert: CriticalErrorRate
+        expr: |
+          sum(rate(http_request_duration_seconds_count{status_code=~"5.."}[5m]))
+          /
+          sum(rate(http_request_duration_seconds_count[5m])) > 0.20
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Taux d'erreur critique"
+          description: "Plus de 20% des requêtes retournent 5xx. Incident probable."
+
+  # ── Verify ─────────────────────────────────────────────────────────────────
+  - name: facilitatorx402.verify
+    rules:
+      - alert: VerifyHighLatency
+        expr: histogram_quantile(0.95, rate(verify_duration_seconds_bucket[5m])) > 0.5
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Latence p95 verify élevée"
+          description: "Le p95 de verify dépasse 500ms sur les 5 dernières minutes (actuel: {{ $value | humanizeDuration }})."
+
+      - alert: VerifyHighRejectionRate
+        expr: |
+          rate(verify_total{status="rejected"}[5m])
+          /
+          rate(verify_total[5m]) > 0.30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Taux de rejet verify élevé (>30%)"
+          description: "Plus de 30% des vérifications sont rejetées. Possible attaque ou mauvaise intégration."
+
+  # ── Settle ─────────────────────────────────────────────────────────────────
+  - name: facilitatorx402.settle
+    rules:
+      - alert: SettleHighFailureRate
+        expr: |
+          rate(settle_total{status="failed"}[10m])
+          /
+          rate(settle_total[10m]) > 0.10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Taux d'échec settle élevé (>10%)"
+          description: "Plus de 10% des settlements échouent. Vérifier le RPC et la clé privée."
+
+      - alert: SettleHighLatency
+        expr: histogram_quantile(0.95, rate(settle_duration_seconds_bucket[10m])) > 15
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Latence p95 settle élevée (>15s)"
+          description: "Le p95 de settle dépasse 15s. Possible congestion réseau ou RPC lent."
+
+      - alert: NoSettlementsIn30m
+        expr: increase(settle_total{status="confirmed"}[30m]) == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Aucun settlement confirmé depuis 30 minutes"
+          description: "Le moteur settle ne produit plus de confirmations. Vérifier la queue BullMQ."
+
+  # ── Circuit Breaker RPC ────────────────────────────────────────────────────
+  - name: facilitatorx402.rpc
+    rules:
+      - alert: RpcCircuitBreakerOpen
+        expr: circuit_breaker_state{name="rpc-primary"} == 1
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Circuit breaker RPC primaire OUVERT"
+          description: "Le RPC primaire est inaccessible. Basculement sur fallback actif."
+
+      - alert: RpcBothCircuitBreakersOpen
+        expr: circuit_breaker_state{name="rpc-primary"} == 1 and circuit_breaker_state{name="rpc-fallback"} == 1
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "TOUS les RPC sont inaccessibles — service dégradé"
+          description: "Les deux RPC (primary et fallback) ont leur circuit breaker ouvert. Les settlements sont bloqués."
+
+      - alert: RpcHighFailureRate
+        expr: rate(rpc_errors_total[5m]) > 0.5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Erreurs RPC fréquentes"
+          description: "Plus de 0.5 erreur RPC par seconde sur les 5 dernières minutes."
+
+      - alert: RpcFailoverActive
+        expr: increase(rpc_failover_total[5m]) > 5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Basculement RPC actif"
+          description: "Plus de 5 basculements vers le RPC fallback en 5 minutes. RPC primaire instable."
+
+  # ── Rate Limiting ──────────────────────────────────────────────────────────
+  - name: facilitatorx402.ratelimit
+    rules:
+      - alert: HighRateLimitHits
+        expr: rate(rate_limit_hit_total[5m]) > 5
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Rate limiting déclenché fréquemment"
+          description: "Plus de 5 requêtes/s bloquées par rate limiting. Possible attaque ou seller mal configuré."
+
+  # ── BullMQ Workers ─────────────────────────────────────────────────────────
+  - name: facilitatorx402.workers
+    rules:
+      - alert: SettlementQueueDepthHigh
+        expr: bullmq_queue_depth{queue="settlement"} > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue settlement saturée (>100 jobs en attente)"
+          description: "La queue BullMQ settlement a {{ $value }} jobs en attente. Worker potentiellement bloqué."
+
+      - alert: WebhookQueueDepthHigh
+        expr: bullmq_queue_depth{queue="webhook"} > 500
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue webhook saturée (>500 jobs en attente)"
+          description: "La queue BullMQ webhook a {{ $value }} jobs en attente."
+
+  # ── Doublons / Anti-replay ─────────────────────────────────────────────────
+  - name: facilitatorx402.antireplay
+    rules:
+      - alert: DuplicatePaymentSpikeDetected
+        expr: rate(duplicate_blocked_total[5m]) > 2
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Spike de paiements dupliqués détecté"
+          description: "Plus de 2 tentatives de replay/doublon par seconde. Possible attaque ou bug client."
