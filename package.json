@@ -1,0 +1,48 @@
+{
+  "name": "facilitatorx402",
+  "version": "1.0.0",
+  "description": "Self-hosted x402 payment facilitator — Node.js, Fastify, Prisma, viem",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "db:migrate": "prisma migrate deploy",
+    "db:migrate:dev": "prisma migrate dev",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:studio": "prisma studio",
+    "db:generate": "prisma generate"
+  },
+  "dependencies": {
+    "@fastify/rate-limit": "^9.1.0",
+    "@prisma/client": "^5.14.0",
+    "bullmq": "^5.7.0",
+    "fastify": "^4.27.0",
+    "ioredis": "^5.3.2",
+    "pino": "^9.1.0",
+    "pino-pretty": "^11.0.0",
+    "prom-client": "^15.1.2",
+    "ulid": "^2.3.0",
+    "viem": "^2.13.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@typescript-eslint/eslint-plugin": "^7.13.0",
+    "@typescript-eslint/parser": "^7.13.0",
+    "@vitest/coverage-v8": "^1.6.0",
+    "eslint": "^8.57.0",
+    "prisma": "^5.14.0",
+    "tsx": "^4.15.0",
+    "typescript": "^5.4.5",
+    "vitest": "^1.6.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
