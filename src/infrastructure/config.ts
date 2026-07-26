@@ -1,60 +1,58 @@
 import { z } from 'zod'
 
-const configSchema = z.object({
-  // App
-  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  PORT: z.coerce.number().int().min(1).max(65535).default(3000),
-  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
-  SERVICE_VERSION: z.string().default('1.0.0'),
+const ConfigSchema = z.object({
+  // Server
+  PORT: z.coerce.number().default(3000),
+  HOST: z.string().default('0.0.0.0'),
+  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+  LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
 
-  // Database
-  DATABASE_URL: z.string().url(),
+  // PostgreSQL — mandatory, no fallback to SQLite
+  DATABASE_URL: z.string().url().refine(
+    (url) => url.startsWith('postgresql://') || url.startsWith('postgres://'),
+    { message: 'DATABASE_URL must be a PostgreSQL connection string (postgresql:// or postgres://)' }
+  ),
 
   // Redis
-  REDIS_URL: z.string().url(),
+  REDIS_URL: z.string().default('redis://localhost:6379'),
 
   // Blockchain
   RPC_URL: z.string().url(),
-  RPC_URL_FALLBACK: z.string().url().optional(),
-  FACILITATOR_PRIVATE_KEY: z.string().min(64),
-  FACILITATOR_ADDRESS: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+  RPC_URL_TESTNET: z.string().url().optional(),
+  FACILITATOR_PRIVATE_KEY: z.string().regex(/^0x[0-9a-fA-F]{64}$/, 'Must be a 0x-prefixed 64-char hex private key'),
 
-  // Network & Asset
-  SUPPORTED_CHAIN_ID: z.coerce.number().int().positive(),
-  SUPPORTED_ASSET_ADDRESS: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
-  SUPPORTED_ASSET_SYMBOL: z.string().min(1),
-  SUPPORTED_ASSET_DECIMALS: z.coerce.number().int().min(0).max(18),
+  // x402 config
+  SUPPORTED_NETWORK: z.string().default('base-mainnet'),
+  SUPPORTED_ASSET: z.string().default('USDC'),
+  SUPPORTED_CHAIN_ID: z.coerce.number().default(8453),
+  MIN_CONFIRMATIONS: z.coerce.number().default(1),
 
-  // Fee Engine
-  PLATFORM_FEE_BPS: z.coerce.number().int().min(0).max(10000).default(50),
-  DEVELOPER_SHARE_PERCENT: z.coerce.number().int().min(0).max(100).default(20),
-  FREE_MONTHLY_VOLUME: z.coerce.bigint().default(0n),
+  // Fee engine
+  PLATFORM_FEE_BPS: z.coerce.number().min(0).max(1000).default(50), // 0.5%
+  DEVELOPER_SHARE_BPS: z.coerce.number().min(0).max(1000).default(20), // 0.2%
 
   // Security
-  RATE_LIMIT_VERIFY: z.coerce.number().int().positive().default(100),
-  RATE_LIMIT_SETTLE: z.coerce.number().int().positive().default(50),
-  RATE_LIMIT_GLOBAL: z.coerce.number().int().positive().default(500),
-  CLOCK_SKEW_TOLERANCE_SECONDS: z.coerce.number().int().min(0).default(30),
-
-  // Settlement
-  CONFIRMATIONS_REQUIRED: z.coerce.number().int().min(1).default(1),
-  SETTLEMENT_TIMEOUT_SECONDS: z.coerce.number().int().min(10).default(120),
-  SETTLE_LOCK_TTL_SECONDS: z.coerce.number().int().min(10).default(60),
-  RPC_MAX_RETRIES: z.coerce.number().int().min(1).default(3),
-  RPC_CIRCUIT_BREAKER_THRESHOLD: z.coerce.number().int().min(1).default(3),
-  RPC_CIRCUIT_BREAKER_COOLDOWN_SECONDS: z.coerce.number().int().min(5).default(30),
+  ADMIN_API_KEY: z.string().min(32).optional(),
+  RATE_LIMIT_MAX: z.coerce.number().default(100),
+  RATE_LIMIT_WINDOW_MS: z.coerce.number().default(60_000),
 })
 
-export type Config = z.infer<typeof configSchema>
+export type Config = z.infer<typeof ConfigSchema>
 
-function loadConfig(): Config {
-  const result = configSchema.safeParse(process.env)
-  if (!result.success) {
-    console.error('\u274C Invalid configuration:')
-    console.error(result.error.format())
-    process.exit(1)
+let config: Config | null = null
+
+export function getConfig(): Config {
+  if (!config) {
+    const result = ConfigSchema.safeParse(process.env)
+    if (!result.success) {
+      const errors = result.error.errors.map((e) => `  ${e.path.join('.')}: ${e.message}`).join('\n')
+      throw new Error(`Configuration error (PostgreSQL required):\n${errors}`)
+    }
+    config = result.data
   }
-  return result.data
+  return config
 }
 
-export const config = loadConfig()
+export function resetConfig(): void {
+  config = null
+}
