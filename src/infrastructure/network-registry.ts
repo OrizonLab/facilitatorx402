@@ -16,6 +16,7 @@
  *   - EURC support alongside USDC
  *   - getAsset(chainId, symbol) helper
  *   - reload() for hot config reload without restart
+ *   - eip712Version per asset (EIP-712 domain version used in signature verification)
  */
 import { logger } from './logger.js'
 
@@ -24,6 +25,8 @@ export interface AssetConfig {
   address: `0x${string}`
   decimals: number
   name: string
+  /** EIP-712 domain version used in TransferWithAuthorization. Defaults to '2'. */
+  eip712Version?: string
 }
 
 export interface NetworkConfig {
@@ -49,12 +52,14 @@ const DEFAULT_NETWORKS: NetworkConfig[] = [
         address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
         decimals: 6,
         name: 'USD Coin',
+        eip712Version: '2',
       },
       {
         symbol: 'EURC',
         address: '0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42',
         decimals: 6,
         name: 'Euro Coin',
+        eip712Version: '2',
       },
     ],
   },
@@ -70,12 +75,14 @@ const DEFAULT_NETWORKS: NetworkConfig[] = [
         address: '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85',
         decimals: 6,
         name: 'USD Coin',
+        eip712Version: '2',
       },
       {
         symbol: 'EURC',
         address: '0x82a4928dC8a761FBE08B0Bfc7e41F6E2f7E5B8d1',
         decimals: 6,
         name: 'Euro Coin',
+        eip712Version: '2',
       },
     ],
   },
@@ -91,6 +98,7 @@ const DEFAULT_NETWORKS: NetworkConfig[] = [
         address: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
         decimals: 6,
         name: 'USD Coin',
+        eip712Version: '2',
       },
     ],
   },
@@ -165,3 +173,6 @@ class NetworkRegistry {
 }
 
 export const networkRegistry = new NetworkRegistry()
+
+// Re-export types for convenience
+export type { AssetConfig as SupportedAsset, NetworkConfig as SupportedNetwork }
