@@ -1,0 +1,40 @@
+{
+  "name": "@orizonlab/x402-client",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for facilitatorx402 — x402 payment facilitator client for AI agents, robots and developers",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts --clean",
+    "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": ["x402", "payment", "blockchain", "facilitator", "ai-agent", "iot", "robot", "usdc"],
+  "license": "MIT",
+  "peerDependencies": {},
+  "dependencies": {
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  },
+  "engines": { "node": ">=18" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OrizonLab/facilitatorx402.git",
+    "directory": "sdk"
+  }
+}
