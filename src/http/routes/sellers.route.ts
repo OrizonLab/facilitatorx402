@@ -1,10 +1,16 @@
 /**
  * Sellers & Webhooks routes — fully persisted to PostgreSQL.
+ *
+ * Security changes:
+ *   - Webhook URLs validated via assertSafeWebhookUrl at registration time
+ *     (SSRF guard: HTTPS-only, private IPs blocked)
+ *   - POST /sellers/:id/rotate-key: rotate a seller's API key without deleting the seller
  */
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { generateApiKey, generateSellerId, generateWebhookId, generateWebhookSecret } from '../../infrastructure/api-key.js'
 import { hashApiKey, verifyApiKey } from '../../infrastructure/api-key.js'
+import { assertSafeWebhookUrl } from '../../infrastructure/webhook-dispatcher.js'
 import { db } from '../../infrastructure/db.js'
 import { logger } from '../../infrastructure/logger.js'
 
@@ -38,7 +44,7 @@ async function resolveSeller(authHeader?: string) {
 
 export async function registerSellersRoutes(app: FastifyInstance): Promise<void> {
 
-  // ── Registration ─────────────────────────────────────────────────────────
+  // ── Registration ─────────────────────────────────────────────────
 
   app.post('/sellers/register', {
     schema: {
@@ -63,6 +69,19 @@ export async function registerSellersRoutes(app: FastifyInstance): Promise<void>
     const body = RegisterSellerBody.safeParse(request.body)
     if (!body.success) {
       return reply.status(400).send({ code: 'invalid_payload', reason: 'Validation failed', message: body.error.errors[0]?.message })
+    }
+
+    // SSRF guard: validate webhookUrl if provided
+    if (body.data.webhookUrl) {
+      try {
+        await assertSafeWebhookUrl(body.data.webhookUrl)
+      } catch (err: any) {
+        return reply.status(400).send({
+          code: 'invalid_webhook_url',
+          reason: 'Webhook URL failed security validation',
+          message: err.message,
+        })
+      }
     }
 
     const { raw: apiKey, hash: apiKeyHash } = generateApiKey()
@@ -94,7 +113,46 @@ export async function registerSellersRoutes(app: FastifyInstance): Promise<void>
     })
   })
 
-  // ── Webhooks ─────────────────────────────────────────────────────────────
+  // ── API Key Rotation ───────────────────────────────────────────────
+
+  app.post('/sellers/rotate-key', {
+    schema: {
+      tags: ['sellers'],
+      summary: 'Rotate the API key for the authenticated seller',
+      description: [
+        'Invalidates the current API key and issues a new one.',
+        '**The new API key is shown only once.** Update your integration immediately.',
+        'The seller record and all webhook subscriptions are preserved.',
+      ].join('\n'),
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const seller = await resolveSeller(request.headers.authorization)
+    if (!seller) {
+      return reply.status(401).send({
+        code: 'unauthorized',
+        reason: 'Invalid API key',
+        message: 'Provide Authorization: Bearer <currentApiKey>',
+      })
+    }
+
+    const { raw: newApiKey, hash: newApiKeyHash } = generateApiKey()
+
+    await db.seller.update({
+      where: { id: seller.id },
+      data: { apiKeyHash: newApiKeyHash },
+    })
+
+    logger.info({ sellerId: seller.id }, 'seller API key rotated')
+
+    return reply.status(200).send({
+      sellerId: seller.id,
+      apiKey: newApiKey, // one-time — store immediately
+      rotatedAt: new Date().toISOString(),
+    })
+  })
+
+  // ── Webhooks ────────────────────────────────────────────────────
 
   app.post('/webhooks', {
     schema: {
@@ -116,6 +174,17 @@ export async function registerSellersRoutes(app: FastifyInstance): Promise<void>
     const body = CreateWebhookBody.safeParse(request.body)
     if (!body.success) {
       return reply.status(400).send({ code: 'invalid_payload', reason: 'Validation failed', message: body.error.errors[0]?.message })
+    }
+
+    // SSRF guard: validate webhook URL before persisting
+    try {
+      await assertSafeWebhookUrl(body.data.url)
+    } catch (err: any) {
+      return reply.status(400).send({
+        code: 'invalid_webhook_url',
+        reason: 'Webhook URL failed security validation',
+        message: err.message,
+      })
     }
 
     const webhookId = generateWebhookId()
