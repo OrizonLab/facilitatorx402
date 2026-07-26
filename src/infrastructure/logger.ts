@@ -1,40 +1,58 @@
 /**
- * Pino structured logger — singleton.
- * In production: JSON output.
- * In development: pino-pretty for human-readable output.
+ * Structured logger — pino.
+ *
+ * All logs include:
+ *   - level
+ *   - timestamp (ISO)
+ *   - service name
+ *   - environment
+ *
+ * Usage:
+ *   logger.info({ requestId, settlementId }, 'settlement confirmed')
+ *   logger.error({ err }, 'unexpected error')
+ *   logger.child({ requestId }).info('verify accepted')
+ *
+ * In production, logs are newline-delimited JSON.
+ * In development, pretty-print is enabled.
  */
 import pino from 'pino'
 import { getConfig } from './config.js'
 
-const config = getConfig()
+function createLogger() {
+  const config = getConfig()
+  const isDev = config.NODE_ENV === 'development'
 
-export const logger = pino({
-  level: config.LOG_LEVEL,
-  ...(config.NODE_ENV === 'development'
-    ? {
-        transport: {
-          target: 'pino-pretty',
-          options: {
-            colorize: true,
-            translateTime: 'HH:MM:ss',
-            ignore: 'pid,hostname',
+  return pino({
+    level: config.LOG_LEVEL,
+    base: {
+      service: 'facilitatorx402',
+      env: config.NODE_ENV,
+    },
+    timestamp: pino.stdTimeFunctions.isoTime,
+    ...(isDev
+      ? {
+          transport: {
+            target: 'pino-pretty',
+            options: { colorize: true, translateTime: 'HH:MM:ss', ignore: 'pid,hostname' },
           },
-        },
-      }
-    : {}),
-  base: {
-    service: 'facilitatorx402',
-    version: process.env.npm_package_version ?? 'unknown',
-  },
-  redact: {
-    paths: [
-      'req.headers.authorization',
-      'req.headers["x-admin-api-key"]',
-      '*.apiKey',
-      '*.privateKey',
+        }
+      : {}),
+    serializers: {
+      err: pino.stdSerializers.err,
+      req: pino.stdSerializers.req,
+      res: pino.stdSerializers.res,
+    },
+    redact: [
+      'FACILITATOR_PRIVATE_KEY',
+      'DATABASE_URL',
+      'REDIS_URL',
+      'METRICS_TOKEN',
+      '*.authorization',
+      '*.password',
       '*.secret',
-      '*.apiKeyHash',
+      '*.privateKey',
     ],
-    censor: '[REDACTED]',
-  },
-})
+  })
+}
+
+export const logger = createLogger()

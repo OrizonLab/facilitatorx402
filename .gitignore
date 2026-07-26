@@ -1,11 +1,10 @@
 # Dependencies
 node_modules/
 
-# Build
+# Build output
 dist/
-*.tsbuildinfo
 
-# Environment
+# Environment — NEVER commit secrets
 .env
 .env.local
 .env.*.local
@@ -14,23 +13,26 @@ dist/
 prisma/migrations/dev.db
 
 # Logs
-logs/
 *.log
-npm-debug.log*
+logs/
+
+# Test coverage
+coverage/
+.nyc_output/
 
 # OS
 .DS_Store
 Thumbs.db
 
-# IDE
+# Editor
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# Coverage
-coverage/
-.nyc_output/
-
 # Docker
-.docker/
+*.env.docker
+
+# Temp
+tmp/
+.tmp/

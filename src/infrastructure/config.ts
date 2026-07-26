@@ -1,58 +1,75 @@
+/**
+ * Config — validated at startup via Zod.
+ *
+ * The process exits immediately if any required env var is missing or invalid.
+ * This ensures the service never starts in a broken configuration state.
+ *
+ * Usage:
+ *   import { getConfig } from './config.js'
+ *   const { DATABASE_URL, FACILITATOR_PRIVATE_KEY } = getConfig()
+ */
 import { z } from 'zod'
 
 const ConfigSchema = z.object({
-  // Server
-  PORT: z.coerce.number().default(3000),
-  HOST: z.string().default('0.0.0.0'),
-  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
-  LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
-
-  // PostgreSQL — mandatory, no fallback to SQLite
-  DATABASE_URL: z.string().url().refine(
-    (url) => url.startsWith('postgresql://') || url.startsWith('postgres://'),
-    { message: 'DATABASE_URL must be a PostgreSQL connection string (postgresql:// or postgres://)' }
-  ),
+  // Database
+  DATABASE_URL: z.string().url().min(1),
 
   // Redis
-  REDIS_URL: z.string().default('redis://localhost:6379'),
+  REDIS_URL: z.string().min(1),
 
   // Blockchain
-  RPC_URL: z.string().url(),
-  RPC_URL_TESTNET: z.string().url().optional(),
-  FACILITATOR_PRIVATE_KEY: z.string().regex(/^0x[0-9a-fA-F]{64}$/, 'Must be a 0x-prefixed 64-char hex private key'),
+  FACILITATOR_PRIVATE_KEY: z
+    .string()
+    .regex(/^0x[0-9a-fA-F]{64}$/, 'FACILITATOR_PRIVATE_KEY must be a 0x-prefixed 32-byte hex string'),
 
-  // x402 config
-  SUPPORTED_NETWORK: z.string().default('base-mainnet'),
-  SUPPORTED_ASSET: z.string().default('USDC'),
-  SUPPORTED_CHAIN_ID: z.coerce.number().default(8453),
-  MIN_CONFIRMATIONS: z.coerce.number().default(1),
+  RPC_URL: z.string().url(),
+  RPC_URL_FALLBACK: z.string().optional().default(''),
+  MIN_CONFIRMATIONS: z.coerce.number().int().min(1).max(10).default(2),
 
   // Fee engine
-  PLATFORM_FEE_BPS: z.coerce.number().min(0).max(1000).default(50), // 0.5%
-  DEVELOPER_SHARE_BPS: z.coerce.number().min(0).max(1000).default(20), // 0.2%
+  PLATFORM_FEE_BPS: z.coerce.number().int().min(0).max(10_000).default(50),
+  DEVELOPER_SHARE_BPS: z.coerce.number().int().min(0).max(10_000).default(20),
+
+  // HTTP server
+  HOST: z.string().default('0.0.0.0'),
+  PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+
+  // Rate limiting
+  RATE_LIMIT_MAX: z.coerce.number().int().min(1).default(100),
+  RATE_LIMIT_WINDOW_MS: z.coerce.number().int().min(1000).default(60_000),
 
   // Security
-  ADMIN_API_KEY: z.string().min(32).optional(),
-  RATE_LIMIT_MAX: z.coerce.number().default(100),
-  RATE_LIMIT_WINDOW_MS: z.coerce.number().default(60_000),
+  METRICS_TOKEN: z.string().optional().default(''),
+
+  // Logging
+  LOG_LEVEL: z
+    .enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal'])
+    .default('info'),
+
+  // Environment
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 })
 
 export type Config = z.infer<typeof ConfigSchema>
 
-let config: Config | null = null
+let _config: Config | null = null
 
-export function getConfig(): Config {
-  if (!config) {
-    const result = ConfigSchema.safeParse(process.env)
-    if (!result.success) {
-      const errors = result.error.errors.map((e) => `  ${e.path.join('.')}: ${e.message}`).join('\n')
-      throw new Error(`Configuration error (PostgreSQL required):\n${errors}`)
-    }
-    config = result.data
+export function loadConfig(): Config {
+  const result = ConfigSchema.safeParse(process.env)
+  if (!result.success) {
+    const issues = result.error.errors
+      .map((e) => `  ${e.path.join('.')}: ${e.message}`)
+      .join('\n')
+    console.error(`[config] Invalid environment variables:\n${issues}`)
+    process.exit(1)
   }
-  return config
+  _config = result.data
+  return _config
 }
 
-export function resetConfig(): void {
-  config = null
+export function getConfig(): Config {
+  if (!_config) {
+    return loadConfig()
+  }
+  return _config
 }

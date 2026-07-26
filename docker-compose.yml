@@ -1,43 +1,39 @@
-# facilitatorx402 — Docker Compose (PostgreSQL + Redis)
-# SQLite is not used.
-
+# ============================================================
+# facilitatorx402 — docker-compose (local dev + CI)
+# Services: app, postgres, redis
+# ============================================================
 version: '3.9'
 
 services:
-  # ─── PostgreSQL ─────────────────────────────────────────────────────────────
+
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: facilitator
-      POSTGRES_PASSWORD: facilitator
       POSTGRES_DB: facilitatorx402
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
     ports:
       - '5432:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U facilitator -d facilitatorx402']
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
       interval: 5s
       timeout: 5s
       retries: 10
 
-  # ─── Redis ───────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: redis-server --save 60 1 --loglevel warning
     ports:
       - '6379:6379'
-    volumes:
-      - redis_data:/data
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
-      timeout: 5s
+      timeout: 3s
       retries: 10
 
-  # ─── App ─────────────────────────────────────────────────────────────────────
   app:
     build:
       context: .
@@ -50,22 +46,28 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgresql://facilitator:facilitator@postgres:5432/facilitatorx402
+      DATABASE_URL: postgresql://postgres:password@postgres:5432/facilitatorx402
       REDIS_URL: redis://redis:6379
-      RPC_URL: ${RPC_URL}
       FACILITATOR_PRIVATE_KEY: ${FACILITATOR_PRIVATE_KEY}
-      ADMIN_API_KEY: ${ADMIN_API_KEY}
+      RPC_URL: ${RPC_URL}
+      RPC_URL_FALLBACK: ${RPC_URL_FALLBACK:-""}
+      MIN_CONFIRMATIONS: ${MIN_CONFIRMATIONS:-2}
       PLATFORM_FEE_BPS: ${PLATFORM_FEE_BPS:-50}
       DEVELOPER_SHARE_BPS: ${DEVELOPER_SHARE_BPS:-20}
+      PORT: 3000
+      HOST: 0.0.0.0
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-100}
+      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-60000}
+      METRICS_TOKEN: ${METRICS_TOKEN:-""}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
-      - '${PORT:-3000}:3000'
+      - '3000:3000'
     healthcheck:
-      test: ['CMD', 'wget', '--quiet', '--spider', 'http://localhost:3000/health']
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:3000/health || exit 1']
+      interval: 30s
+      timeout: 10s
       start_period: 15s
+      retries: 3
 
 volumes:
   postgres_data:
-  redis_data:
